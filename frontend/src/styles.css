@@ -1,0 +1,430 @@
+/* Deliberately plain. M1 exists to prove the fetch path, not to look good. */
+
+:root {
+  color-scheme: light dark;
+
+  /* Status palette, fixed rather than themed. Severity never rests on colour
+     alone: every use is paired with a ?!/?/?? glyph, and graph markers differ
+     in shape too — the warning and serious steps sit close together for
+     colour-vision deficiency (adjacent CVD dE 11.3, normal-vision 13.6). */
+  --severity-inaccuracy: #fab219;
+  --severity-mistake: #ec835a;
+  --severity-blunder: #d03b3b;
+
+  /* Text steps of the same three. The mark colours are 1.8-2.6:1 on white,
+     fine for a filled shape and illegible for a glyph, so text gets its own
+     darker step at >= 4.5:1. */
+  --severity-inaccuracy-ink: #8a6100;
+  --severity-mistake-ink: #b1441a;
+  --severity-blunder-ink: #b3261e;
+
+  --graph-white: #f0f0f0;
+  --graph-black: #2b2b2b;
+  --graph-line: #8a8a8a;
+  --graph-midline: rgba(138, 138, 138, 0.75);
+  --graph-cursor: #3987e5;
+  /* Reads against both halves of the two-tone fill, which the page surface
+     colour would not. */
+  --graph-marker-ring: #8a8a8a;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+}
+
+.muted {
+  opacity: 0.7;
+  font-size: 0.9rem;
+}
+
+.banner {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 1rem;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: #b3261e;
+}
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+}
+
+.settings h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.settings label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+button.link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+}
+
+th {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.7;
+}
+
+td.win {
+  color: #1a7f37;
+}
+td.loss {
+  color: #b3261e;
+}
+
+tr.clickable {
+  cursor: pointer;
+}
+tr.clickable:hover td {
+  background: rgba(128, 128, 128, 0.12);
+}
+
+/* Chessground's base stylesheet sets no size; the wrapper must. */
+.board {
+  width: min(78vw, 30rem);
+  height: min(78vw, 30rem);
+}
+
+.analysis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+}
+
+.controls button {
+  min-width: 2.5rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.moves {
+  flex: 1 1 12rem;
+  max-height: min(78vw, 30rem);
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.moves li {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr 1fr;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.moves .number {
+  opacity: 0.6;
+  font-size: 0.85rem;
+  text-align: right;
+}
+
+button.move {
+  border: none;
+  background: none;
+  padding: 0.15rem 0.4rem;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+button.move:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+button.move.current {
+  background: rgba(100, 140, 220, 0.35);
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  background: rgba(128, 128, 128, 0.18);
+}
+
+.badge.done {
+  background: rgba(26, 127, 55, 0.18);
+  color: #1a7f37;
+}
+
+.badge.working {
+  background: rgba(100, 140, 220, 0.25);
+}
+
+button.link.failed {
+  color: #b3261e;
+  font-size: 0.8rem;
+}
+
+.board-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+/* Fills by win percentage, so it pins full on a forced mate. */
+.evalbar {
+  position: relative;
+  width: 1.6rem;
+  height: min(78vw, 30rem);
+  background: #2b2b2b;
+  border-radius: 3px;
+  overflow: hidden;
+  flex: none;
+}
+
+.evalbar.empty {
+  background: rgba(128, 128, 128, 0.25);
+}
+
+.evalbar .white {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: #f0f0f0;
+  transition: height 120ms ease-out;
+}
+
+.evalbar .label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+  z-index: 1;
+}
+
+.evalbar .label.top {
+  top: 0.15rem;
+  color: #f0f0f0;
+}
+
+.evalbar .label.bottom {
+  bottom: 0.15rem;
+  color: #2b2b2b;
+}
+
+.severity {
+  margin-left: 0.1rem;
+  font-weight: 700;
+}
+
+.severity.inaccuracy {
+  color: var(--severity-inaccuracy-ink);
+}
+.severity.mistake {
+  color: var(--severity-mistake-ink);
+}
+.severity.blunder {
+  color: var(--severity-blunder-ink);
+}
+
+/* --- evaluation graph --------------------------------------------------- */
+
+.graph {
+  margin: 1.5rem 0 0;
+}
+
+.graph-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+.graph-readout {
+  margin: 0.4rem 0 0;
+  font-size: 0.85rem;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* --- candidate lines ---------------------------------------------------- */
+
+.candidates {
+  margin-top: 1.5rem;
+}
+
+.candidates-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.candidates-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.candidate-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.candidate {
+  display: grid;
+  grid-template-columns: 1.2rem 3.5rem 3.5rem 1fr auto;
+  gap: 0.6rem;
+  align-items: baseline;
+  width: 100%;
+  padding: 0.3rem 0.4rem;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.candidate:hover,
+.candidate:focus-visible {
+  background: rgba(128, 128, 128, 0.16);
+}
+
+.candidate .rank {
+  opacity: 0.6;
+}
+
+.candidate .san {
+  font-weight: 600;
+}
+
+.candidate .score {
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate .continuation {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.variation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 1rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 4px;
+}
+
+.hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+}
+
+/* The game's move list is context, not the focus, while off in a sideline. */
+.moves.dimmed {
+  opacity: 0.45;
+}
+
+/* Chessground rings the checked king with a red radial gradient; this pulses it
+   twice as it appears so the check is noticed, not just present. */
+cg-board square.check {
+  animation: check-flash 0.5s ease-out 2;
+}
+
+@keyframes check-flash {
+  0%,
+  100% {
+    filter: none;
+  }
+  50% {
+    filter: brightness(1.7) saturate(1.3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  cg-board square.check {
+    animation: none;
+  }
+}
+
+:root {
+  /* Ring around a severity badge, so it separates from either square colour. */
+  --badge-ring: #ffffff;
+}
