@@ -57,6 +57,7 @@ through a mock transport.
 | `src/chess_analysis/classify.py` | Inaccuracy / mistake / blunder thresholds |
 | `src/chess_analysis/engine.py` | Stockfish over UCI, fixed depth, MultiPV |
 | `src/chess_analysis/analyzer.py` | PGN → per-ply evaluations and severities |
+| `src/chess_analysis/explain.py` | Why a flagged move was bad, in words |
 | `src/chess_analysis/platforms/` | Game sources: Chess.com and Lichess |
 | `src/chess_analysis/sync.py` | Per-platform pulls, cursors, conditional requests |
 | `src/chess_analysis/store.py` | All SQL |
@@ -65,8 +66,16 @@ through a mock transport.
 
 ## Status
 
-Working: engine analysis, move classification, Chess.com and Lichess sync,
-settings, game list.
+Working: engine analysis, move classification, error explanations, Chess.com
+and Lichess sync, settings, game list.
+
+Every flagged move is explained rather than only marked: what the opponent gets
+to play, how much material it costs, and the tactic that collects it — fork,
+pin, skewer, discovered attack, back-rank mate. Where a simpler move stands
+within a few win percent of the engine's first choice, that one is put forward
+instead, since Stockfish's top move is regularly one no human would find. All of
+it is derived when a game is read, from analysis already stored, so retuning the
+wording costs nothing and re-analysing nothing.
 
 Both platforms are independent — connect either or both. Lichess takes an
 optional personal API token (Preferences → API access tokens on lichess.org),

@@ -124,6 +124,46 @@ export interface Line {
   alternatives: string[];
 }
 
+/** The move to play instead, which is not always the engine's own first
+ *  choice: where a simpler move stands within a small margin of it, that one is
+ *  put forward and `simpler` says so (PRD 4.5). `cost` is the win percentage
+ *  preferring it gives up, and `engine_san` what the engine wanted. */
+export interface BetterMove {
+  san: string;
+  move: string;
+  pv: string[];
+  pv_san: string[];
+  simpler: boolean;
+  cost: number;
+  engine_san: string;
+}
+
+/** Why a flagged move was bad: what the opponent gets to do about it, what it
+ *  costs, and the tactic that collects. Derived server-side from the stored
+ *  analysis of this ply and the next one. */
+export interface Explanation {
+  played_san: string;
+  /** One sentence, ready to show. */
+  summary: string;
+  /** Pawns, or null when the move cost position rather than material. */
+  material_loss: number | null;
+  /** Whether that material was given away or merely left unwon. */
+  material_kind: "lost" | "missed" | null;
+  /** Moves until the opponent mates, when the move allowed a forced one. */
+  mate_in: number | null;
+  /** Moves until the player would have mated, when the move passed one up. */
+  missed_mate_in: number | null;
+  motifs: string[];
+  /** The refutation, in SAN and in UCI — the latter so it can be played out. */
+  punishment: string[];
+  punishment_pv: string[];
+  /** Set when the engine picked the flagged move itself, which fixed depth
+   *  allows: the search turned against it one ply later. There is nothing to
+   *  play instead, so `better` is null. */
+  engine_agreed: boolean;
+  better: BetterMove | null;
+}
+
 export interface Position {
   ply: number;
   fen: string;
@@ -138,6 +178,8 @@ export interface Position {
   depth: number;
   win_percent_loss: number;
   severity: "inaccuracy" | "mistake" | "blunder" | null;
+  /** Present only on flagged moves. */
+  explanation: Explanation | null;
 }
 
 export interface Evaluation {

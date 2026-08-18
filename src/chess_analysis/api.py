@@ -28,6 +28,7 @@ from chess_analysis.evaluation import (
     terminal_score,
     win_percent,
 )
+from chess_analysis.explain import explain_error
 from chess_analysis.lines import present_lines
 from chess_analysis.models import AnalysisStatus, Game, GameFilter, Platform, Settings
 from chess_analysis.platforms import PlatformError
@@ -548,7 +549,7 @@ def create_app(
 
 
 def _with_win_percents(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Attach win percentages to each ply.
+    """Attach win percentages, and an explanation to every flagged move.
 
     Computed here with the same model the classifier uses, rather than
     reimplementing the sigmoid in TypeScript: if the evaluation bar and the
@@ -556,11 +557,16 @@ def _with_win_percents(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     `eval` is the position before the move, `played` the position after it —
     together they cover every board state the user can step to.
+
+    Explanations are derived rather than stored (PRD 4.5), and read from the
+    neighbouring rows: the refutation of the move played at ply `n` is the best
+    line of ply `n + 1`, which is already in hand.
     """
     enriched = []
-    for position in positions:
+    for index, position in enumerate(positions):
         best = position["lines"][0]["score"] if position["lines"] else None
         played = position["played_move_eval"]
+        following = positions[index + 1] if index + 1 < len(positions) else None
         enriched.append(
             {
                 **position,
@@ -570,6 +576,20 @@ def _with_win_percents(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     win_percent(score_from_dict(best)) if best is not None else None
                 ),
                 "played_win_percent": win_percent(score_from_dict(played)),
+                "explanation": (
+                    explain_error(
+                        position["fen"],
+                        position["played_move"],
+                        position["lines"],
+                        refutation=following["lines"] if following else None,
+                        win_percent_loss=position["win_percent_loss"],
+                        last_move=(
+                            positions[index - 1]["played_move"] if index else None
+                        ),
+                    )
+                    if position["severity"]
+                    else None
+                ),
             }
         )
     return enriched

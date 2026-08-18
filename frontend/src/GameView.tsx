@@ -15,6 +15,7 @@ import {
 import { Board } from "./Board";
 import { CandidateLines, SidelineBar } from "./CandidateLines";
 import { EvalBar } from "./EvalBar";
+import { ErrorExplanation } from "./Explanation";
 import { EvalGraph } from "./EvalGraph";
 import { SummaryStats } from "./Summary";
 import { shortDate, timeControl } from "./format";
@@ -386,6 +387,11 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
   const lines = sideline ? (sidelineEval?.lines ?? []) : (here?.lines ?? []);
   const linesDepth = sideline ? (sidelineEval?.depth ?? null) : (here?.depth ?? null);
 
+  // The move that landed on the position now on the board: `positions[k]`
+  // describes the move played *from* position k, so the one just played is
+  // `positions[ply - 1]`. A sideline is nobody's mistake.
+  const flagged = !sideline && ply > 0 ? (positions[ply - 1] ?? null) : null;
+
   const gameMove = replay.moves[ply - 1];
   const sidelineMove = walked?.squares[walked.squares.length - 1];
   const lastMove: [Key, Key] | undefined = sideline
@@ -562,6 +568,23 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
             column the board was leaving empty means no scrolling to consult
             the engine about the move you are looking at. */}
         <div className="side-panel panel">
+          {flagged?.explanation && (
+            <ErrorExplanation
+              position={flagged}
+              moveNumber={`${Math.ceil(ply / 2)}${ply % 2 ? "." : "…"}`}
+              revealed={revealed}
+              onReveal={() => toggleLines(true)}
+              // The refutation runs from the position on the board; the move to
+              // have played instead runs from the one before it.
+              onPlayPunishment={(pv) =>
+                setSideline({ fromPly: ply, moves: pv, index: 1 })
+              }
+              onPlayBetter={(pv) =>
+                setSideline({ fromPly: ply - 1, moves: pv, index: 1 })
+              }
+            />
+          )}
+
           <CandidateLines
             lines={lines}
             depth={linesDepth}

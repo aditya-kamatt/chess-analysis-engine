@@ -768,6 +768,67 @@ def test_severity_reaches_the_move_list(client):
     assert position["win_percent_loss"] == pytest.approx(35.9)
 
 
+def test_a_flagged_move_carries_an_explanation(client):
+    """The refutation is the *next* ply's best line, so saying what a move
+    allowed costs no engine time (PRD 4.5)."""
+    import chess
+    from chess.engine import Cp
+
+    from chess_analysis.engine import Line
+
+    before = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 1"
+    board = chess.Board(before)
+    blunder = chess.Move.from_uci("d8h4")
+    board.push(blunder)
+    punish = chess.Move.from_uci("f3h4")
+
+    configure(client)
+    client.post("/api/sync")
+    store_analysis(
+        client,
+        1,
+        [
+            analysed_ply(
+                ply=0,
+                fen=before,
+                side_to_move=chess.BLACK,
+                played_move=blunder,
+                played_move_score=Cp(900),
+                lines=(
+                    Line(
+                        move=chess.Move.from_uci("g8f6"),
+                        score=Cp(20),
+                        pv=(
+                            chess.Move.from_uci("g8f6"),
+                            chess.Move.from_uci("b1c3"),
+                        ),
+                    ),
+                ),
+                win_percent_loss=40.8,
+                severity="blunder",
+            ),
+            analysed_ply(
+                ply=1,
+                fen=board.fen(),
+                played_move=punish,
+                played_move_score=Cp(900),
+                lines=(Line(move=punish, score=Cp(900), pv=(punish,)),),
+            ),
+        ],
+    )
+
+    positions = client.get("/api/games/1/analysis").json()["positions"]
+
+    explanation = positions[0]["explanation"]
+    assert explanation["summary"] == (
+        "Qh4 drops a queen — Nxh4 takes the undefended queen on h4."
+    )
+    assert explanation["punishment"] == ["Nxh4"]
+    assert explanation["better"]["san"] == "Nf6"
+    # Nothing was wrong with the reply, so there is nothing to explain about it.
+    assert positions[1]["explanation"] is None
+
+
 def test_summary_counts_the_players_errors(client):
     """The list and the game header are built from this, so it must answer
     "which game is worth reviewing" without shipping every ply."""

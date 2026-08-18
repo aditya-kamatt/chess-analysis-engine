@@ -835,6 +835,78 @@ td.numeric {
   gap: 0.3rem;
 }
 
+/* --- error explanation -------------------------------------------------- */
+
+/* Sits above the engine's lines, tinted by severity down its leading edge —
+   the same three colours as the badge on the board and the glyph in the move
+   list, so a blunder reads as one thing across the screen rather than three.
+   The tint is a left border rather than a fill: this card carries body text,
+   and text on a wash of the blunder red is the one place those colours stop
+   being legible. */
+.explanation {
+  flex: none;
+  margin-bottom: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border-faint);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  font-size: 0.85rem;
+}
+
+.explanation.inaccuracy {
+  border-left-color: var(--severity-inaccuracy);
+}
+.explanation.mistake {
+  border-left-color: var(--severity-mistake);
+}
+.explanation.blunder {
+  border-left-color: var(--severity-blunder);
+}
+
+.explanation h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* The tier is the heading; the move and what it cost are its caption, pushed
+   to the far end so the sentence below starts at the left edge. */
+.explanation h2 .move {
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+}
+
+.explanation h2 .loss {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.explanation .verdict {
+  margin: 0.35rem 0 0;
+}
+
+.explanation p + p {
+  margin-top: 0.3rem;
+}
+
+/* A line of moves is read as notation, so it keeps the figures aligned and
+   does not wrap mid-variation any more than it has to. */
+.explanation .line {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.explanation .simpler {
+  font-weight: 400;
+}
+
 /* --- candidate lines ---------------------------------------------------- */
 
 /* A section of the side panel now, not a block on the page: it gets a rule
