@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import chess
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -29,17 +29,22 @@ from chess_analysis.evaluation import (
     win_percent,
 )
 from chess_analysis.lines import present_lines
-from chess_analysis.models import AnalysisStatus, Game, Platform
-from chess_analysis.platforms.chesscom import (
-    ChessComClient,
-    ChessComError,
-    RateLimited,
-    UnknownPlayer,
-)
-from chess_analysis.sync import SyncError, sync_chesscom
+from chess_analysis.models import AnalysisStatus, Game, GameFilter, Platform, Settings
+from chess_analysis.platforms import PlatformError
+from chess_analysis.platforms import chesscom as chesscom_api
+from chess_analysis.platforms import lichess as lichess_api
+from chess_analysis.platforms.chesscom import ChessComClient
+from chess_analysis.platforms.lichess import LichessClient
+from chess_analysis.sync import SyncError, SyncResult, sync_chesscom, sync_lichess
 from chess_analysis.worker import URGENT, AnalysisWorker
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+# Spelled out as literals so an unknown filter value is a 422 naming the choices
+# rather than a silently empty list.
+PlayerColor = Literal["white", "black"]
+GameResult = Literal["win", "loss", "draw"]
+TimeClass = Literal["bullet", "blitz", "rapid", "daily"]
 
 
 def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
@@ -58,22 +63,37 @@ Conn = Annotated[sqlite3.Connection, Depends(get_conn)]
 
 
 class SettingsResponse(BaseModel):
+    """Never carries `lichess_token`: it is stored, used and nothing else
+    (PRD 4.1). `lichess_token_set` is all the UI needs to say it is there."""
+
     model_config = ConfigDict(from_attributes=True)
 
     chesscom_enabled: bool
     chesscom_username: str | None
     chesscom_last_synced_at: datetime | None
     chesscom_backfill_cursor: datetime | None
+    lichess_enabled: bool
+    lichess_username: str | None
+    lichess_token_set: bool
+    lichess_last_synced_at: datetime | None
+    lichess_backfill_cursor: datetime | None
     reveal_lines_by_default: bool
     analysis_depth: int
     background_analysis: bool
 
 
 class SettingsUpdate(BaseModel):
-    """Chess.com and preferences only; Lichess lands with its own milestone."""
+    """Accounts and preferences. Each platform section is independent: neither,
+    either or both may be enabled (PRD 4.1)."""
 
     chesscom_enabled: bool = False
     chesscom_username: str | None = None
+    lichess_enabled: bool = False
+    lichess_username: str | None = None
+    lichess_token: str | None = None
+    """Omitted (or null) leaves the stored token alone — the form cannot show
+    it, so a blank field must not be read as "delete it". An empty string is
+    the explicit "forget it"."""
     reveal_lines_by_default: bool = False
     analysis_depth: int = Field(default=20, ge=6, le=30)
     background_analysis: bool = True
@@ -95,6 +115,19 @@ class EvaluateRequest(BaseModel):
     fen: str
 
 
+class AnalysisSummaryResponse(BaseModel):
+    """The error tally the list and the game header are built from."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    moves: int
+    inaccuracies: int
+    mistakes: int
+    blunders: int
+    average_loss: float
+    accuracy: float
+
+
 class GameSummary(BaseModel):
     id: int
     platform: str
@@ -106,6 +139,8 @@ class GameSummary(BaseModel):
     eco_code: str | None
     url: str | None
     analysis_status: str
+    analysis: AnalysisSummaryResponse | None = None
+    """Absent until the game has been analysed."""
 
 
 class GameDetail(GameSummary):
@@ -134,7 +169,12 @@ class AnalysisStatusResponse(BaseModel):
     error: str | None
 
 
-class SyncResponse(BaseModel):
+class PlatformSync(BaseModel):
+    """One platform's share of a sync. `last_synced_at` and `backfill_cursor`
+    are per-platform values and stay that way here — an account synced a minute
+    ago and one that failed an hour ago have nothing to average."""
+
+    platform: str
     inserted: int
     entries_seen: int
     archives_read: int
@@ -142,6 +182,23 @@ class SyncResponse(BaseModel):
     first_sync: bool
     last_synced_at: datetime
     backfill_cursor: datetime | None
+
+
+class SyncFailure(BaseModel):
+    """A platform that could not be synced while another one could. Surfaced
+    rather than raised so one failing account does not discard the other's
+    games (PRD 4.2)."""
+
+    platform: str
+    message: str
+
+
+class SyncResponse(BaseModel):
+    platforms: list[PlatformSync]
+    failures: list[SyncFailure]
+    inserted: int
+    entries_seen: int
+    first_sync: bool
     total_games: int
 
 
@@ -166,11 +223,13 @@ def create_app(
     *,
     db_path: Path | str | None = None,
     client_factory: Callable[[], ChessComClient] = ChessComClient,
+    lichess_client_factory: Callable[[str | None], LichessClient] = LichessClient,
     worker: AnalysisWorker | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Chess Analysis", lifespan=_lifespan)
     app.state.db_path = db_path
     app.state.client_factory = client_factory
+    app.state.lichess_client_factory = lichess_client_factory
     app.state.worker = worker if worker is not None else AnalysisWorker(db_path)
     # In-memory guard: one sync at a time, and the button disables while it runs.
     app.state.sync_lock = threading.Lock()
@@ -183,8 +242,7 @@ def create_app(
     def read_settings(conn: Conn) -> Any:
         return store.load_settings(conn)
 
-    @app.put("/api/settings", response_model=SettingsResponse)
-    def write_settings(conn: Conn, update: SettingsUpdate) -> Any:
+    def _chesscom_fields(current: Settings, update: SettingsUpdate) -> dict[str, Any]:
         username = (update.chesscom_username or "").strip() or None
 
         if update.chesscom_enabled:
@@ -198,19 +256,49 @@ def create_app(
         fields: dict[str, Any] = {
             "chesscom_enabled": update.chesscom_enabled,
             "chesscom_username": username,
+        }
+        if current.chesscom_username != username:
+            fields |= _cleared_cursors(Platform.CHESSCOM)
+        return fields
+
+    def _lichess_fields(current: Settings, update: SettingsUpdate) -> dict[str, Any]:
+        username = (update.lichess_username or "").strip() or None
+        # None means "unchanged" and empty means "forget it"; see SettingsUpdate.
+        token = current.lichess_token
+        if update.lichess_token is not None:
+            token = update.lichess_token.strip() or None
+
+        if update.lichess_enabled:
+            if not username:
+                raise HTTPException(422, "Enter a Lichess username")
+            with _wrapped_errors():
+                # Sent with the token, so one that Lichess rejects is caught
+                # here rather than at the first sync (PRD 4.1).
+                with lichess_client_factory(token) as client:
+                    if not client.player_exists(username):
+                        raise HTTPException(422, f"No Lichess user named {username}")
+
+        fields: dict[str, Any] = {
+            "lichess_enabled": update.lichess_enabled,
+            "lichess_username": username,
+            "lichess_token": token,
+        }
+        if current.lichess_username != username:
+            fields |= _cleared_cursors(Platform.LICHESS)
+        return fields
+
+    @app.put("/api/settings", response_model=SettingsResponse)
+    def write_settings(conn: Conn, update: SettingsUpdate) -> Any:
+        current = store.load_settings(conn)
+        # Both platforms are validated before anything is written, so a bad
+        # Lichess username cannot leave half a saved form behind.
+        fields: dict[str, Any] = {
+            **_chesscom_fields(current, update),
+            **_lichess_fields(current, update),
             "reveal_lines_by_default": update.reveal_lines_by_default,
             "analysis_depth": update.analysis_depth,
             "background_analysis": update.background_analysis,
         }
-
-        # A different account is a different archive: the cursors describe the
-        # old one and must not be carried over, or the first sync of the new
-        # account would fetch only "since" a time that never applied to it.
-        current = store.load_settings(conn)
-        if current.chesscom_username != username:
-            fields["chesscom_last_synced_at"] = None
-            fields["chesscom_backfill_cursor"] = None
-
         store.save_settings(conn, **fields)
         return store.load_settings(conn)
 
@@ -225,44 +313,119 @@ def create_app(
             store.save_settings(conn, **fields)
         return store.load_settings(conn)
 
+    def _run_chesscom_sync(conn: sqlite3.Connection) -> SyncResult:
+        with client_factory() as client:
+            return sync_chesscom(conn, client)
+
+    def _run_lichess_sync(conn: sqlite3.Connection) -> SyncResult:
+        token = store.load_settings(conn).lichess_token
+        with lichess_client_factory(token) as client:
+            return sync_lichess(conn, client)
+
     @app.post("/api/sync", response_model=SyncResponse)
     def run_sync(conn: Conn) -> Any:
+        settings = store.load_settings(conn)
+        runners = [
+            (platform, run)
+            for platform, enabled, run in (
+                (Platform.CHESSCOM, settings.chesscom_enabled, _run_chesscom_sync),
+                (Platform.LICHESS, settings.lichess_enabled, _run_lichess_sync),
+            )
+            if enabled
+        ]
+        if not runners:
+            raise HTTPException(400, "No platform is configured")
+
         if not app.state.sync_lock.acquire(blocking=False):
             raise HTTPException(409, "A sync is already running")
+
+        results: list[SyncResult] = []
+        failures: list[tuple[Platform, Exception]] = []
         try:
-            with _wrapped_errors():
-                with client_factory() as client:
-                    result = sync_chesscom(conn, client)
+            # Platforms are synced independently: one account being rate
+            # limited must not throw away the games the other one just
+            # returned, so its failure is reported beside them (PRD 4.2).
+            for platform, run in runners:
+                try:
+                    results.append(run(conn))
+                except (PlatformError, SyncError) as exc:
+                    failures.append((platform, exc))
         finally:
             app.state.sync_lock.release()
+
+        if not results:
+            # Nothing was synced at all, so the failure is the whole answer and
+            # belongs in the status code rather than in a field.
+            raise _as_http_error(failures[0][1]) from failures[0][1]
 
         # The list renders immediately; analysis catches up behind it (PRD 4.3).
         # With background analysis off, only games the user opens are analysed.
         if store.load_settings(conn).background_analysis:
-            app.state.worker.enqueue(result.inserted_ids)
+            app.state.worker.enqueue(
+                [game_id for result in results for game_id in result.inserted_ids]
+            )
 
         return SyncResponse(
-            inserted=result.inserted,
-            entries_seen=result.entries_seen,
-            archives_read=result.archives_read,
-            archives_unchanged=result.archives_unchanged,
-            first_sync=result.first_sync,
-            last_synced_at=result.last_synced_at,
-            backfill_cursor=result.backfill_cursor,
+            platforms=[
+                PlatformSync(
+                    platform=str(result.platform),
+                    inserted=result.inserted,
+                    entries_seen=result.entries_seen,
+                    archives_read=result.archives_read,
+                    archives_unchanged=result.archives_unchanged,
+                    first_sync=result.first_sync,
+                    last_synced_at=result.last_synced_at,
+                    backfill_cursor=result.backfill_cursor,
+                )
+                for result in results
+            ],
+            failures=[
+                SyncFailure(
+                    platform=str(platform), message=str(_as_http_error(exc).detail)
+                )
+                for platform, exc in failures
+            ],
+            inserted=sum(result.inserted for result in results),
+            entries_seen=sum(result.entries_seen for result in results),
+            first_sync=any(result.first_sync for result in results),
             total_games=store.count_games(conn),
         )
 
     @app.get("/api/games", response_model=GameList)
     def read_games(
         conn: Conn,
-        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        # The list grows a page at a time and re-requests the whole open window
+        # on refresh, so the ceiling is how many rows one screen may hold, not a
+        # page size. Beyond it the filters are the way down to older games.
+        limit: Annotated[int, Query(ge=1, le=500)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
+        color: Annotated[PlayerColor | None, Query()] = None,
+        result: Annotated[GameResult | None, Query()] = None,
+        time_class: Annotated[TimeClass | None, Query()] = None,
+        with_errors: Annotated[bool, Query()] = False,
     ) -> Any:
-        games = store.list_games(conn, limit=limit, offset=offset)
+        game_filter = GameFilter(
+            player_color=color,
+            result=result,
+            time_class=time_class,
+            with_errors=with_errors,
+        )
+        games = store.list_games(
+            conn, limit=limit, offset=offset, game_filter=game_filter
+        )
+        summaries = store.analysis_summaries(conn, [_id(game) for game in games])
         return GameList(
-            games=[GameSummary(**_summary_fields(game)) for game in games],
-            total=store.count_games(conn),
-            history_back_to=store.oldest_played_at(conn, Platform.CHESSCOM),
+            games=[
+                GameSummary(
+                    **_summary_fields(game), analysis=summaries.get(_id(game))
+                )
+                for game in games
+            ],
+            total=store.count_games(conn, game_filter),
+            # Unfiltered, and across every platform: how deep the history goes
+            # is a fact about the list, not about whatever it is narrowed to
+            # right now or about one of the accounts feeding it.
+            history_back_to=store.oldest_played_at(conn),
         )
 
     @app.get("/api/games/{game_id}", response_model=GameDetail)
@@ -270,13 +433,25 @@ def create_app(
         game = store.get_game(conn, game_id)
         if game is None:
             raise HTTPException(404, "No such game")
-        return GameDetail(**_summary_fields(game), pgn=game.pgn)
+        summaries = store.analysis_summaries(conn, [game_id])
+        return GameDetail(
+            **_summary_fields(game),
+            pgn=game.pgn,
+            analysis=summaries.get(game_id),
+        )
 
     @app.get("/api/games/{game_id}/analysis")
     def read_analysis(conn: Conn, game_id: int) -> Any:
         if store.get_game(conn, game_id) is None:
             raise HTTPException(404, "No such game")
-        return {"positions": _with_win_percents(store.get_positions(conn, game_id))}
+        # The summary rides along rather than being fetched separately: the game
+        # view polls this endpoint while analysis runs, so the header count fills
+        # in with the board instead of needing its own refresh.
+        summaries = store.analysis_summaries(conn, [game_id])
+        return {
+            "positions": _with_win_percents(store.get_positions(conn, game_id)),
+            "summary": summaries.get(game_id),
+        }
 
     @app.post("/api/games/{game_id}/analyse", response_model=AnalysisStatusResponse)
     def queue_analysis(
@@ -411,6 +586,12 @@ def _outcome(board: chess.Board) -> str:
     return "draw"
 
 
+def _id(game: Game) -> int:
+    """A stored game always has one; this is for the type checker's benefit."""
+    assert game.id is not None
+    return game.id
+
+
 def _summary_fields(game: Game) -> dict[str, Any]:
     return {
         "id": game.id,
@@ -426,19 +607,43 @@ def _summary_fields(game: Game) -> dict[str, Any]:
     }
 
 
+def _cleared_cursors(platform: Platform) -> dict[str, Any]:
+    """A different account is a different archive: the cursors describe the old
+    one and must not be carried over, or the first sync of the new account
+    would fetch only "since" a time that never applied to it."""
+    return {
+        f"{platform}_last_synced_at": None,
+        f"{platform}_backfill_cursor": None,
+    }
+
+
+def _as_http_error(exc: Exception) -> HTTPException:
+    """The response for a platform failure, naming the cause (PRD 4.2).
+
+    A function rather than only an `except` ladder because a sync over two
+    platforms needs the same message as a field on a 200 when the other
+    platform succeeded.
+    """
+    match exc:
+        case chesscom_api.UnknownPlayer():
+            return HTTPException(422, "Chess.com does not recognise that username")
+        case lichess_api.UnknownPlayer():
+            return HTTPException(422, "Lichess does not recognise that username")
+        case chesscom_api.RateLimited() | lichess_api.RateLimited():
+            return HTTPException(429, str(exc))
+        case SyncError():
+            return HTTPException(400, str(exc))
+        case _:
+            return HTTPException(502, str(exc))
+
+
 @contextmanager
 def _wrapped_errors() -> Iterator[None]:
     """Turn platform failures into responses naming the cause (PRD 4.2)."""
     try:
         yield
-    except UnknownPlayer as exc:
-        raise HTTPException(422, "Chess.com does not recognise that username") from exc
-    except RateLimited as exc:
-        raise HTTPException(429, str(exc)) from exc
-    except ChessComError as exc:
-        raise HTTPException(502, str(exc)) from exc
-    except SyncError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    except (PlatformError, SyncError) as exc:
+        raise _as_http_error(exc) from exc
 
 
 app = create_app()

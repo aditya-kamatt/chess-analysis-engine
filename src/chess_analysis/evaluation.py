@@ -25,6 +25,14 @@ from chess.engine import Cp, Mate, MateGiven, Score
 # is at +9, which is exactly why raw centipawn loss is a poor severity signal.
 WIN_PERCENT_SCALE = 0.00368208
 
+# Lichess' accuracy curve, fitted so that giving up nothing scores 100 and the
+# figure decays fast through the range where errors actually live. It runs off
+# the same win-percentage loss that assigns severity, so a game cannot report a
+# high accuracy and a page full of blunders.
+_ACCURACY_SCALE = 103.1668
+_ACCURACY_DECAY = 0.04354
+_ACCURACY_OFFSET = 3.1669
+
 # Large enough that a forced mate at any realistic distance still outranks every
 # centipawn score, used only to recover the sign of a mate score.
 _MATE_SCORE = 100_000
@@ -63,6 +71,18 @@ def win_percent_loss(before: Score, after: Score, mover: chess.Color) -> float:
         0.0,
         win_percent(pov(before, mover)) - win_percent(pov(after, mover)),
     )
+
+
+def move_accuracy(loss: float) -> float:
+    """Accuracy (0-100) for one move that gave up `loss` win percent.
+
+    Giving up nothing scores 99.9999 rather than a clean 100 — the curve is
+    fitted, not constructed — which rounds to 100 everywhere it is displayed.
+    The clamp matters at the other end: past about 80 win percent given up the
+    curve goes negative, and a move can only be as bad as zero.
+    """
+    raw = _ACCURACY_SCALE * math.exp(-_ACCURACY_DECAY * loss) - _ACCURACY_OFFSET
+    return max(0.0, min(100.0, raw))
 
 
 def terminal_score(board: chess.Board) -> Score:

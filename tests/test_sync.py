@@ -5,7 +5,8 @@ import pytest
 from chess_analysis import db, store
 from chess_analysis.models import Platform
 from chess_analysis.platforms.chesscom import ArchiveResponse, ChessComError
-from chess_analysis.sync import SyncError, sync_chesscom
+from chess_analysis.platforms.lichess import LichessError
+from chess_analysis.sync import SyncError, sync_chesscom, sync_lichess
 
 PGN = '[ECO "B01"]\n[White "alice"]\n[Black "bob"]\n\n1. e4 d5 *'
 
@@ -254,3 +255,188 @@ def test_history_depth_is_reported_from_stored_games(conn):
     assert store.oldest_played_at(conn, Platform.CHESSCOM) == datetime(
         2026, 8, 1, 12, tzinfo=UTC
     )
+
+
+# --- Lichess ---------------------------------------------------------------
+
+
+LICHESS_PGN = '[White "alice"]\n[Black "bob"]\n\n1. e4 d5 *'
+
+
+def lichess_entry(game_id: str, played_at: datetime, **overrides):
+    base = {
+        "id": game_id,
+        "variant": "standard",
+        "speed": "blitz",
+        "createdAt": int(played_at.timestamp() * 1000),
+        "lastMoveAt": int(played_at.timestamp() * 1000),
+        "status": "resign",
+        "winner": "white",
+        "clock": {"initial": 180, "increment": 0},
+        "players": {
+            "white": {"user": {"name": "alice"}},
+            "black": {"user": {"name": "bob"}},
+        },
+        "pgn": LICHESS_PGN,
+    }
+    return base | overrides
+
+
+class FakeLichessClient:
+    """Stands in for LichessClient; sync only needs the one method."""
+
+    def __init__(self, entries: list[dict] | None = None):
+        self.entries = entries or []
+        self.calls: list[dict] = []
+        self.error: Exception | None = None
+
+    def export_games(self, username, *, max_games=None, since=None, until=None):
+        self.calls.append({"max_games": max_games, "since": since, "until": until})
+        if self.error is not None:
+            raise self.error
+        return list(self.entries)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+
+def lichess_games(count: int, start: int = 0):
+    base = datetime(2026, 8, 1, 12, tzinfo=UTC)
+    return [
+        lichess_entry(f"lg{i}", base + timedelta(days=i))
+        for i in range(start, start + count)
+    ]
+
+
+@pytest.fixture
+def lichess_conn(tmp_path):
+    connection = db.connect(tmp_path / "lichess.db")
+    store.save_settings(connection, lichess_enabled=True, lichess_username="alice")
+    yield connection
+    connection.close()
+
+
+def test_unconfigured_lichess_is_refused(tmp_path):
+    connection = db.connect(tmp_path / "x.db")
+    with pytest.raises(SyncError):
+        sync_lichess(connection, FakeLichessClient())
+
+
+def test_first_lichess_sync_asks_for_the_target_and_no_more(lichess_conn):
+    client = FakeLichessClient(lichess_games(60))
+
+    result = sync_lichess(lichess_conn, client, target=50)
+
+    # One request, bounded by `max` rather than by a walk backward (PRD 4.2).
+    assert client.calls == [{"max_games": 50, "since": None, "until": None}]
+    assert result.first_sync is True
+    assert result.inserted == 60
+
+
+def test_first_lichess_sync_sets_both_cursors(lichess_conn):
+    result = sync_lichess(lichess_conn, FakeLichessClient(lichess_games(5)))
+
+    settings = store.load_settings(lichess_conn)
+    assert settings.lichess_last_synced_at is not None
+    assert settings.lichess_backfill_cursor == datetime(2026, 8, 1, 12, tzinfo=UTC)
+    assert result.backfill_cursor == settings.lichess_backfill_cursor
+    assert settings.lichess_last_synced_at != settings.lichess_backfill_cursor
+
+
+def test_subsequent_lichess_sync_asks_only_for_what_is_new(lichess_conn):
+    store.save_settings(
+        lichess_conn, lichess_last_synced_at=datetime(2026, 8, 10, tzinfo=UTC)
+    )
+    client = FakeLichessClient(lichess_games(2))
+
+    sync_lichess(lichess_conn, client)
+
+    call = client.calls[0]
+    assert call["max_games"] is None
+    # Lichess narrows on when a game started, so the window reaches back far
+    # enough to catch one that began before the last sync and ended after it.
+    assert call["since"] == datetime(2026, 8, 9, tzinfo=UTC)
+
+
+def test_subsequent_lichess_sync_leaves_the_backfill_cursor_alone(lichess_conn):
+    sync_lichess(lichess_conn, FakeLichessClient(lichess_games(3)))
+    original = store.load_settings(lichess_conn).lichess_backfill_cursor
+
+    sync_lichess(lichess_conn, FakeLichessClient(lichess_games(5)))
+
+    assert store.load_settings(lichess_conn).lichess_backfill_cursor == original
+
+
+def test_resyncing_lichess_does_not_duplicate(lichess_conn):
+    entries = lichess_games(4)
+    sync_lichess(lichess_conn, FakeLichessClient(entries))
+
+    result = sync_lichess(lichess_conn, FakeLichessClient(entries))
+
+    assert result.entries_seen == 4  # the overlap re-reads them
+    assert result.inserted == 0  # and stores none of them twice
+    assert store.count_games(lichess_conn) == 4
+
+
+def test_lichess_variants_are_filtered_before_storage(lichess_conn):
+    entries = lichess_games(2) + [
+        lichess_entry("v1", datetime(2026, 8, 9, tzinfo=UTC), variant="atomic")
+    ]
+
+    result = sync_lichess(lichess_conn, FakeLichessClient(entries))
+
+    assert result.entries_seen == 3
+    assert result.inserted == 2
+
+
+def test_failed_lichess_sync_does_not_advance_the_cursor(lichess_conn):
+    sync_lichess(lichess_conn, FakeLichessClient(lichess_games(2)))
+    before = store.load_settings(lichess_conn).lichess_last_synced_at
+
+    client = FakeLichessClient(lichess_games(4))
+    client.error = LichessError("boom")
+    with pytest.raises(LichessError):
+        sync_lichess(lichess_conn, client)
+
+    assert store.load_settings(lichess_conn).lichess_last_synced_at == before
+
+
+def test_empty_lichess_account_syncs_cleanly(lichess_conn):
+    result = sync_lichess(lichess_conn, FakeLichessClient())
+
+    assert result.inserted == 0
+    assert store.load_settings(lichess_conn).lichess_last_synced_at is not None
+
+
+def test_the_two_platforms_keep_separate_cursors(tmp_path):
+    """Both accounts land in one list, but neither's freshness describes the
+    other's — a Lichess sync must not make Chess.com look just-synced."""
+    connection = db.connect(tmp_path / "both.db")
+    store.save_settings(
+        connection,
+        chesscom_enabled=True,
+        chesscom_username="alice",
+        lichess_enabled=True,
+        lichess_username="alice",
+    )
+
+    sync_lichess(connection, FakeLichessClient(lichess_games(2)))
+
+    settings = store.load_settings(connection)
+    assert settings.lichess_last_synced_at is not None
+    assert settings.chesscom_last_synced_at is None
+
+    sync_chesscom(connection, FakeClient({url_for(2026, 8): month_of_games(2026, 8, 2)}))
+
+    settings = store.load_settings(connection)
+    assert settings.chesscom_last_synced_at is not None
+    assert store.count_games(connection) == 4
+    # History depth spans both platforms; each backfill cursor is its own.
+    assert store.oldest_played_at(connection) == datetime(2026, 8, 1, 12, tzinfo=UTC)
+    assert store.oldest_played_at(connection, Platform.LICHESS) == datetime(
+        2026, 8, 1, 12, tzinfo=UTC
+    )
+    connection.close()
