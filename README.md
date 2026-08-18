@@ -1,7 +1,6 @@
 # Chess Analysis Engine
 
-Self-hosted analysis for your own Chess.com games. See
-[chess-analysis-app-prd.md](chess-analysis-app-prd.md) for the full spec.
+Self-hosted analysis for your own Chess.com games.
 
 ## Setup
 
