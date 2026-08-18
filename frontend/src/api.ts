@@ -3,9 +3,40 @@ export interface Settings {
   chesscom_username: string | null;
   chesscom_last_synced_at: string | null;
   chesscom_backfill_cursor: string | null;
+  lichess_enabled: boolean;
+  lichess_username: string | null;
+  /** Whether a token is stored. The token itself is never sent back — the form
+   *  needs to know it is there, not what it is. */
+  lichess_token_set: boolean;
+  lichess_last_synced_at: string | null;
+  lichess_backfill_cursor: string | null;
   reveal_lines_by_default: boolean;
   analysis_depth: number;
   background_analysis: boolean;
+}
+
+export const PLATFORM_NAMES: Record<string, string> = {
+  chesscom: "Chess.com",
+  lichess: "Lichess",
+};
+
+export function platformName(platform: string): string {
+  return PLATFORM_NAMES[platform] ?? platform;
+}
+
+/** What a game's analysis adds up to, over the player's own moves.
+ *
+ *  Computed server-side with the same win% model that assigns severity, rather
+ *  than summed in the browser: an accuracy figure that disagreed with the
+ *  blunder count beside it would be worse than no figure at all. */
+export interface AnalysisSummary {
+  moves: number;
+  inaccuracies: number;
+  mistakes: number;
+  blunders: number;
+  /** Mean win percentage given up per move. */
+  average_loss: number;
+  accuracy: number;
 }
 
 export interface GameSummary {
@@ -19,6 +50,8 @@ export interface GameSummary {
   eco_code: string | null;
   url: string | null;
   analysis_status: string;
+  /** Null until the game has been analysed. */
+  analysis: AnalysisSummary | null;
 }
 
 export interface GameDetail extends GameSummary {
@@ -27,11 +60,24 @@ export interface GameDetail extends GameSummary {
 
 export interface GameList {
   games: GameSummary[];
+  /** Matching the current filters, not the whole archive. */
   total: number;
+  /** Oldest game synced, regardless of filters. */
   history_back_to: string | null;
 }
 
-export interface SyncResponse {
+/** Narrowing applied server-side, so counts and paging stay honest. */
+export interface GameFilters {
+  color?: "white" | "black";
+  result?: "win" | "loss" | "draw";
+  timeClass?: "bullet" | "blitz" | "rapid" | "daily";
+  withErrors?: boolean;
+}
+
+/** One platform's share of a sync. Freshness is per-platform and stays that
+ *  way: an account synced a minute ago and one that failed have no average. */
+export interface PlatformSync {
+  platform: string;
   inserted: number;
   entries_seen: number;
   archives_read: number;
@@ -39,6 +85,22 @@ export interface SyncResponse {
   first_sync: boolean;
   last_synced_at: string;
   backfill_cursor: string | null;
+}
+
+/** A platform that could not be synced while another one could. Reported
+ *  rather than thrown, so one failing account does not discard the other's
+ *  games. */
+export interface SyncFailure {
+  platform: string;
+  message: string;
+}
+
+export interface SyncResponse {
+  platforms: PlatformSync[];
+  failures: SyncFailure[];
+  inserted: number;
+  entries_seen: number;
+  first_sync: boolean;
   total_games: number;
 }
 
@@ -146,9 +208,16 @@ async function errorMessage(response: Response): Promise<string> {
 export const api = {
   settings: () => request<Settings>("/api/settings"),
 
+  /** Both platform sections every time: each field has a default server-side,
+   *  so sending half the form would quietly disconnect the other account.
+   *  `lichess_token` omitted means "leave the stored one alone"; an empty
+   *  string is the explicit "forget it". */
   saveSettings: (settings: {
     chesscom_enabled: boolean;
     chesscom_username: string | null;
+    lichess_enabled: boolean;
+    lichess_username: string | null;
+    lichess_token?: string;
     analysis_depth: number;
     background_analysis: boolean;
   }) =>
@@ -170,13 +239,26 @@ export const api = {
 
   sync: () => request<SyncResponse>("/api/sync", { method: "POST" }),
 
-  games: (limit = 50, offset = 0) =>
-    request<GameList>(`/api/games?limit=${limit}&offset=${offset}`),
+  games: (limit = 50, offset = 0, filters: GameFilters = {}) => {
+    const query = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (filters.color) query.set("color", filters.color);
+    if (filters.result) query.set("result", filters.result);
+    if (filters.timeClass) query.set("time_class", filters.timeClass);
+    if (filters.withErrors) query.set("with_errors", "true");
+    return request<GameList>(`/api/games?${query}`);
+  },
 
   game: (id: number) => request<GameDetail>(`/api/games/${id}`),
 
+  /** Positions and their summary together: the game view polls this while
+   *  analysis runs, so the header fills in with the board. */
   analysis: (id: number) =>
-    request<{ positions: Position[] }>(`/api/games/${id}/analysis`),
+    request<{ positions: Position[]; summary: AnalysisSummary | null }>(
+      `/api/games/${id}/analysis`,
+    ),
 
   /** Evaluate an arbitrary position — a sideline the user just played. */
   evaluate: (fen: string) =>

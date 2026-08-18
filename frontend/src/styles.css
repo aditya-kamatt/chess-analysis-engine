@@ -1,19 +1,40 @@
-/* Deliberately plain. M1 exists to prove the fetch path, not to look good. */
-
 :root {
   color-scheme: light dark;
 
-  /* Status palette, fixed rather than themed. Severity never rests on colour
-     alone: every use is paired with a ?!/?/?? glyph, and graph markers differ
-     in shape too — the warning and serious steps sit close together for
-     colour-vision deficiency (adjacent CVD dE 11.3, normal-vision 13.6). */
+  /* Two levels, not one. Everything used to sit directly on the page, which is
+     what made a screen with a board on one side and a move list on the other
+     read as two things adrift rather than one instrument: content goes on
+     `panel`, the page recedes behind it. */
+  --surface: #f2f3f5;
+  --panel: #ffffff;
+  --panel-soft: #f7f8fa;
+  --ink: #1a1a19;
+  --ink-muted: #5b5f66;
+  --border: rgba(20, 20, 25, 0.12);
+  --border-faint: rgba(20, 20, 25, 0.07);
+  --hover: rgba(20, 20, 25, 0.05);
+  --selected: rgba(57, 135, 229, 0.16);
+  --focus: #3987e5;
+  --shadow: 0 1px 2px rgba(16, 18, 24, 0.05), 0 2px 6px rgba(16, 18, 24, 0.04);
+  --radius: 10px;
+  --radius-sm: 6px;
+
+  --positive: #1a7f37;
+  --negative: #b3261e;
+
+  /* Status palette, fixed rather than themed: these sit on the board and on the
+     graph's own two-tone fill, neither of which follows the page. Severity
+     never rests on colour alone — every use is paired with a ?!/?/?? glyph, and
+     graph markers differ in shape too — because the warning and serious steps
+     sit close together for colour-vision deficiency (adjacent CVD dE 11.3,
+     normal-vision 13.6). */
   --severity-inaccuracy: #fab219;
   --severity-mistake: #ec835a;
   --severity-blunder: #d03b3b;
 
-  /* Text steps of the same three. The mark colours are 1.8-2.6:1 on white,
-     fine for a filled shape and illegible for a glyph, so text gets its own
-     darker step at >= 4.5:1. */
+  /* Text steps of the same three, which do follow the page. The mark colours
+     are 1.8-2.6:1 on white, fine for a filled shape and illegible for a glyph,
+     so text gets its own step at >= 4.5:1 against the surface it lands on. */
   --severity-inaccuracy-ink: #8a6100;
   --severity-mistake-ink: #b1441a;
   --severity-blunder-ink: #b3261e;
@@ -26,27 +47,172 @@
   /* Reads against both halves of the two-tone fill, which the page surface
      colour would not. */
   --graph-marker-ring: #8a8a8a;
+
+  /* One number drives the board, the evaluation bar and the move list, so the
+     three cannot fall out of step.
+
+     Bounded by height as well as width: the board is the primary object on the
+     screen, and a width-only cap left most of a laptop display empty. The
+     divisor is the evaluation graph sitting beneath it, whose height is a fixed
+     fraction of its own width — without it the pair overflows every viewport
+     shorter than it is wide. The subtracted rem are the surrounding chrome:
+     back button, the header card and its four figures, the controls, and the
+     hint under the graph — measured, not guessed, so the graph lands above the
+     fold on a laptop rather than a scroll below it. */
+  --board-size: max(16rem, min(78vw, 42rem, (100vh - 21rem) / 1.24));
+  --evalbar-width: 1.6rem;
+  --board-gap: 0.5rem;
+  --panel-pad: 1rem;
+
   font-family: system-ui, sans-serif;
   line-height: 1.5;
 }
 
+/* Only the tokens whose job changes with the surface are restated. The three
+   ink steps are refitted rather than reused: measured against this background
+   the light ones are 2.7-3.2:1, which is why a blunder count was hard to read
+   here and legible on white. These clear 4.5:1 (11.1, 8.2 and 6.5) and separate
+   further under deuteranopia than the light steps do (dE 8.1 against 1.3). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #0e0f12;
+    --panel: #17181d;
+    --panel-soft: #1d1f25;
+    --ink: #e9e9e7;
+    --ink-muted: #9ba1a9;
+    --border: rgba(255, 255, 255, 0.1);
+    --border-faint: rgba(255, 255, 255, 0.06);
+    --hover: rgba(255, 255, 255, 0.06);
+    --selected: rgba(57, 135, 229, 0.26);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+
+    --positive: #3fb950;
+    --negative: #ff7b72;
+
+    --severity-inaccuracy-ink: #ffc233;
+    --severity-mistake-ink: #ff9552;
+    --severity-blunder-ink: #ff6b6b;
+  }
+}
+
 body {
   margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* One visible focus style for everything, since the list is now walkable by
+   keyboard and half these controls draw their own backgrounds. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* The default control chrome is the user agent's idea of a button, which reads
+   as an unfinished page next to everything above. The plainer buttons below —
+   moves, candidates, links — all carry a class, so they outrank this. */
+button,
+select,
+input[type="text"],
+input[type="number"],
+input:not([type]) {
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+button {
+  padding: 0.35rem 0.75rem;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--ink-muted);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+select,
+input[type="text"],
+input[type="number"],
+input:not([type]) {
+  padding: 0.3rem 0.45rem;
+  background: var(--panel);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--focus);
 }
 
 main {
-  max-width: 60rem;
+  max-width: 64rem;
   margin: 0 auto;
-  padding: 1.5rem;
+  padding: 1.75rem 1.5rem 3rem;
+}
+
+/* The analysis board earns the extra width: a full-size board, the evaluation
+   bar and a side panel wide enough to hold the engine's lines. */
+main.wide {
+  max-width: 74rem;
 }
 
 h1 {
-  font-size: 1.5rem;
+  margin: 0;
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
 }
 
+/* Every block of content sits on one of these. */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+/* A colour rather than opacity: dimming punched holes in anything layered over
+   a panel, and washed out the severity glyphs sitting inside muted lines. */
 .muted {
-  opacity: 0.7;
+  color: var(--ink-muted);
   font-size: 0.9rem;
+}
+
+/* Section label — small, spaced, quiet. Gives a panel a top edge to hang its
+   content from instead of starting cold. */
+.panel-title {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+}
+
+/* Announcements with nothing to show: the graph replacing a progress bar is a
+   visible change and an inaudible one. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+kbd {
+  padding: 0 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
 }
 
 .banner {
@@ -57,7 +223,7 @@ h1 {
   margin-bottom: 1rem;
   border: 1px solid currentColor;
   border-radius: 4px;
-  color: #b3261e;
+  color: var(--negative);
 }
 
 .settings {
@@ -65,15 +231,20 @@ h1 {
   flex-direction: column;
   align-items: flex-start;
   gap: 0.6rem;
-  padding: 1rem;
-  margin-bottom: 1.5rem;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
 }
 
 .settings h2 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 1.05rem;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.2rem;
 }
 
 .settings label {
@@ -82,11 +253,37 @@ h1 {
   gap: 0.5rem;
 }
 
+/* One block per platform. They are independent sections of the same form, and
+   ungrouped the second username read as belonging to the first checkbox. */
+.settings .platform {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.settings .platform p {
+  margin: 0;
+  max-width: 46ch;
+}
+
+/* Sync, filters and the row count are one control surface, not three loose
+   lines above a table. */
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
+  gap: 0.75rem 1rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.toolbar .spacer {
+  flex: 1;
 }
 
 button.link {
@@ -99,6 +296,18 @@ button.link {
   cursor: pointer;
 }
 
+/* The table and its paging footer are one card. */
+.games {
+  overflow: hidden;
+}
+
+/* Eight columns do not fit a phone. The table scrolls inside this rather than
+   taking the page with it: a body that slides sideways loses the heading, the
+   filters and the paging controls off the edge along with the columns. */
+.table-scroll {
+  overflow-x: auto;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -107,46 +316,211 @@ table {
 th,
 td {
   text-align: left;
-  padding: 0.35rem 0.6rem;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--border-faint);
+  /* A date broken over three lines makes a row taller than a phone's thumb. */
+  white-space: nowrap;
 }
 
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Two forms of the same text, one shown per width. Declared before the media
+   query below so that query can override them rather than lose to them. */
+.narrow-only {
+  display: none;
+}
+
+/* The cards cost width a phone does not have: their padding plus the page's own
+   put the board over the edge. Both come in, and the board gives up a little,
+   so the whole column fits without the page sliding sideways. */
+@media (max-width: 40rem) {
+  :root {
+    --panel-pad: 0.65rem;
+    --board-size: max(15rem, min(74vw, (100vh - 21rem) / 1.24));
+  }
+
+  main {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .game-head,
+  .toolbar,
+  .settings {
+    padding-left: 0.85rem;
+    padding-right: 0.85rem;
+  }
+}
+
+/* A phone fits four of these columns, so the four have to be the ones that
+   answer the question the list exists to answer — which game is worth
+   reviewing. Date, result, the error tally and the accuracy stay; site, colour,
+   time control, opening and opponent go, all of them a tap away in the game
+   itself. Squeezing all nine in instead pushed the tally off the right-hand
+   edge. */
+@media (max-width: 40rem) {
+  th:nth-child(2),
+  td:nth-child(2),
+  th:nth-child(3),
+  td:nth-child(3),
+  th:nth-child(4),
+  td:nth-child(4),
+  th:nth-child(6),
+  td:nth-child(6),
+  th:nth-child(7),
+  td:nth-child(7) {
+    display: none;
+  }
+
+  /* Horizontal only: the vertical padding is what makes the row a thumb-sized
+     target, so it stays. */
+  th,
+  td {
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+  }
+
+  /* The headings are the widest thing in their columns here — "Accuracy" is
+     longer than any percentage under it — so they set the table's width and
+     clip themselves against the edge. */
+  th {
+    font-size: 0.7rem;
+    letter-spacing: 0;
+  }
+
+  .wide-only {
+    display: none;
+  }
+  .narrow-only {
+    display: inline;
+  }
+}
+
+/* Sticky, so the columns stay named while a long list scrolls past. */
 th {
-  font-size: 0.8rem;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-soft);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.7rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  opacity: 0.7;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
 }
 
 td.win {
-  color: #1a7f37;
+  color: var(--positive);
 }
 td.loss {
-  color: #b3261e;
+  color: var(--negative);
 }
 
 tr.clickable {
   cursor: pointer;
 }
-tr.clickable:hover td {
-  background: rgba(128, 128, 128, 0.12);
+tr.clickable:hover td,
+tr.clickable:focus-within td {
+  background: var(--hover);
+}
+
+/* The row is a mouse convenience; this link is what actually opens the game, so
+   the list is walkable by keyboard and a game can be opened in a new tab. */
+a.game-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+a.game-link:hover {
+  text-decoration: underline;
+}
+
+/* --- filters and paging ------------------------------------------------- */
+
+/* A group inside the toolbar, not a bar of its own. */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 0.9rem;
+  padding-left: 0.9rem;
+  border-left: 1px solid var(--border-faint);
+}
+
+.filters label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+}
+
+.filters select {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.25rem 0.4rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+/* Inside the table's card, closing it off rather than floating underneath. */
+.more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--border-faint);
 }
 
 /* Chessground's base stylesheet sets no size; the wrapper must. */
 .board {
-  width: min(78vw, 30rem);
-  height: min(78vw, 30rem);
+  width: var(--board-size);
+  height: var(--board-size);
 }
 
 .analysis {
   display: flex;
   flex-wrap: wrap;
-  gap: 1.5rem;
-  align-items: flex-start;
+  gap: 1.25rem;
+  /* Stretch, not flex-start: the panel beside the board takes the board's full
+     height instead of ending wherever its content happens to stop, which is
+     what left a tall empty column down the right of the screen. */
+  align-items: stretch;
+}
+
+/* Pinned to the board's own width. Left to size itself the column would stretch
+   to the widest row of controls and push the board off a narrow screen, and the
+   graph beneath would no longer line up with the board it describes. */
+.board-column {
+  flex: none;
+  width: calc(
+    var(--board-size) + var(--evalbar-width) + var(--board-gap) + 2 * var(--panel-pad)
+  );
+  padding: var(--panel-pad);
+}
+
+/* Everything that reads against the position rather than being the position:
+   the engine's lines, whatever sideline is open, and the moves themselves. */
+.side-panel {
+  flex: 1 1 20rem;
+  /* Without this a long variation sets the panel's floor width and shoves the
+     board off the row. */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: var(--panel-pad);
 }
 
 .controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
   margin-top: 0.6rem;
@@ -157,9 +531,29 @@ tr.clickable:hover td {
   padding: 0.3rem 0.5rem;
 }
 
+/* Error jumps are a separate errand from stepping through the game, so they sit
+   at the far end of the row rather than blurring into the transport controls.
+   Grouped rather than pushed individually so a narrow screen wraps the pair
+   together instead of stranding one on each row. */
+.controls .jump {
+  display: flex;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+/* Takes whatever height the panel has left over. Its content is positioned out
+   of flow, so an eighty-move game contributes nothing to how tall the row wants
+   to be — left in flow it stretched the board's card to twice the viewport,
+   and capping it instead left a hole under the last move. */
+.moves-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 7rem;
+}
+
 .moves {
-  flex: 1 1 12rem;
-  max-height: min(78vw, 30rem);
+  position: absolute;
+  inset: 0;
   overflow-y: auto;
   margin: 0;
   padding: 0;
@@ -169,35 +563,47 @@ tr.clickable:hover td {
 
 .moves li {
   display: grid;
-  grid-template-columns: 2.5rem 1fr 1fr;
+  /* Capped rather than 1fr: on a panel this wide, equal fractions push white's
+     move and black's reply so far apart they stop reading as one turn. The
+     banding carries the row the rest of the way across. */
+  grid-template-columns: 2.4rem minmax(0, 7rem) minmax(0, 7rem);
   gap: 0.25rem;
   align-items: center;
+  padding: 0 0.25rem;
+  border-radius: var(--radius-sm);
+}
+
+/* Banding, so a wide panel reads as a ruled list rather than two columns of
+   text with a gap down the middle. It also makes a turn easy to track across. */
+.moves li:nth-child(odd) {
+  background: var(--panel-soft);
 }
 
 .moves .number {
-  opacity: 0.6;
-  font-size: 0.85rem;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
   text-align: right;
 }
 
 button.move {
   border: none;
   background: none;
-  padding: 0.15rem 0.4rem;
+  padding: 0.2rem 0.4rem;
   font: inherit;
   color: inherit;
   text-align: left;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 button.move:hover {
-  background: rgba(128, 128, 128, 0.2);
+  background: var(--hover);
 }
 
 button.move.current {
-  background: rgba(100, 140, 220, 0.35);
+  background: var(--selected);
   font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--focus) 45%, transparent);
 }
 
 .badge {
@@ -205,34 +611,34 @@ button.move.current {
   padding: 0.05rem 0.4rem;
   border-radius: 3px;
   font-size: 0.8rem;
-  background: rgba(128, 128, 128, 0.18);
+  background: var(--hover);
 }
 
 .badge.done {
-  background: rgba(26, 127, 55, 0.18);
-  color: #1a7f37;
+  background: color-mix(in srgb, var(--positive) 18%, transparent);
+  color: var(--positive);
 }
 
 .badge.working {
-  background: rgba(100, 140, 220, 0.25);
+  background: var(--selected);
 }
 
 button.link.failed {
-  color: #b3261e;
+  color: var(--negative);
   font-size: 0.8rem;
 }
 
 .board-row {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--board-gap);
   align-items: stretch;
 }
 
 /* Fills by win percentage, so it pins full on a forced mate. */
 .evalbar {
   position: relative;
-  width: 1.6rem;
-  height: min(78vw, 30rem);
+  width: var(--evalbar-width);
+  height: var(--board-size);
   background: #2b2b2b;
   border-radius: 3px;
   overflow: hidden;
@@ -271,6 +677,114 @@ button.link.failed {
   color: #2b2b2b;
 }
 
+/* --- page and game headers ---------------------------------------------- */
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+/* Title and figures share a row. Stacked, this card was a wide band with a
+   short heading on it and four tiles underneath, and every pixel of its height
+   came out of the board's. */
+.game-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  padding: 0.9rem 1.1rem;
+  margin-bottom: 1rem;
+}
+
+.game-head h1 {
+  font-size: 1.3rem;
+}
+
+.game-head .meta {
+  margin: 0.2rem 0 0;
+}
+
+.back {
+  display: inline-block;
+  margin-bottom: 0.9rem;
+}
+
+/* --- analysis summary --------------------------------------------------- */
+
+/* Four numbers, given the weight of numbers. As a sentence this was a line of
+   grey text under the heading and read as a caption; the point of it is to be
+   the first thing seen, because it decides whether the game is worth the next
+   ten minutes. */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.stat {
+  min-width: 5.4rem;
+  padding: 0.4rem 0.65rem;
+  background: var(--panel-soft);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-sm);
+}
+
+.stat .value {
+  display: block;
+  font-size: 1.25rem;
+  font-weight: 650;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat .label {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
+}
+
+/* A tier with none of them is not worth the same ink as one with four. */
+.stat.zero .value {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+.stat.inaccuracy .value {
+  color: var(--severity-inaccuracy-ink);
+}
+.stat.mistake .value {
+  color: var(--severity-mistake-ink);
+}
+.stat.blunder .value {
+  color: var(--severity-blunder-ink);
+}
+
+.error-counts {
+  display: inline-flex;
+  gap: 0.4rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The flex gap already spaces these; the glyph's own nudge is for sitting
+   against a move in the list. */
+.error-counts .severity {
+  margin-left: 0;
+}
+
+td.numeric {
+  font-variant-numeric: tabular-nums;
+}
+
 .severity {
   margin-left: 0.1rem;
   font-weight: 700;
@@ -288,8 +802,10 @@ button.link.failed {
 
 /* --- evaluation graph --------------------------------------------------- */
 
+/* Directly beneath the board it scrubs, so it needs separating from the
+   controls, not from a page of other content. */
 .graph {
-  margin: 1.5rem 0 0;
+  margin: 0.75rem 0 0;
 }
 
 .graph-svg {
@@ -321,36 +837,45 @@ button.link.failed {
 
 /* --- candidate lines ---------------------------------------------------- */
 
+/* A section of the side panel now, not a block on the page: it gets a rule
+   under its heading instead of a margin above it. */
 .candidates {
-  margin-top: 1.5rem;
+  flex: none;
 }
 
 .candidates-head {
   display: flex;
   align-items: baseline;
+  justify-content: space-between;
   gap: 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border-faint);
 }
 
 .candidates-head h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
 }
 
 .candidate-list {
   list-style: none;
-  margin: 0.5rem 0 0;
+  margin: 0.4rem 0 0;
   padding: 0;
 }
 
 .candidate {
   display: grid;
-  grid-template-columns: 1.2rem 3.5rem 3.5rem 1fr auto;
-  gap: 0.6rem;
+  grid-template-columns: 1.1rem 3.2rem 3.2rem 1fr;
+  gap: 0.5rem;
   align-items: baseline;
   width: 100%;
-  padding: 0.3rem 0.4rem;
+  padding: 0.35rem 0.4rem;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: none;
   font: inherit;
   color: inherit;
@@ -360,11 +885,19 @@ button.link.failed {
 
 .candidate:hover,
 .candidate:focus-visible {
-  background: rgba(128, 128, 128, 0.16);
+  background: var(--hover);
 }
 
 .candidate .rank {
-  opacity: 0.6;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+/* Wraps under the line rather than adding a fifth column: the panel is narrower
+   than the page this used to sit on. */
+.candidate .alt {
+  grid-column: 2 / -1;
+  font-size: 0.8rem;
 }
 
 .candidate .san {
@@ -386,20 +919,130 @@ button.link.failed {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.3rem;
-  margin-top: 1rem;
   padding: 0.5rem 0.6rem;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 4px;
+  background: var(--panel-soft);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
 }
 
 .hint {
-  margin: 0.5rem 0 0;
-  font-size: 0.8rem;
+  margin: 0.6rem 0 0;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border-faint);
+  font-size: 0.78rem;
 }
 
 /* The game's move list is context, not the focus, while off in a sideline. */
 .moves.dimmed {
   opacity: 0.45;
+}
+
+/* --- waiting ------------------------------------------------------------ */
+
+/* The board's shape, held while the PGN is in flight. A line of text would let
+   the whole page jump into place a moment later. */
+.skeleton {
+  border-radius: 4px;
+  background: var(--hover);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.skeleton.board-shape {
+  width: var(--board-size);
+  height: var(--board-size);
+}
+
+.skeleton.bar-shape {
+  width: var(--evalbar-width);
+  height: var(--board-size);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+}
+
+.progress progress {
+  flex: 1;
+  /* Fixed rather than the user agent's default inline size, which is narrow
+     enough to read as decoration next to a board this size. */
+  height: 0.5rem;
+  accent-color: var(--focus);
+}
+
+/* --- promotion ---------------------------------------------------------- */
+
+/* Anchored over the board rather than a modal: the choice belongs on the square
+   being promoted to, and a dialog would hide the position it depends on. */
+.board-wrap {
+  position: relative;
+}
+
+.promotion {
+  position: absolute;
+  inset: 0;
+  /* Light enough to read the position through: the whole reason this sits on
+     the board is that the position is what the choice is being made from. */
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
+  border-radius: 4px;
+  /* Over the pieces. The board is built with `addPieceZIndex`, which stacks
+     each piece by rank, so an overlay left on the default layer is covered by
+     whatever piece happens to stand under it — the promoting pawn, always. */
+  z-index: 30;
+}
+
+/* One square wide, hanging off the promotion square down the file. */
+.promotion-choices {
+  position: absolute;
+  display: flex;
+  width: 12.5%;
+}
+
+.promotion-choices button {
+  width: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  /* Tied to the board, so the pieces stay the size of the squares they are
+     standing on at every board size. */
+  font-size: calc(var(--board-size) / 11);
+  line-height: 1;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+}
+
+.promotion-choices button:hover {
+  background: var(--hover);
+}
+
+/* Touch targets. Pointer-gated so a mouse keeps the compact row: the guideline
+   is about fingers, and 2.75rem buttons look oversized under a cursor. */
+@media (pointer: coarse) {
+  .controls button,
+  .filters select,
+  .more button {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+
+  th,
+  td {
+    padding: 0.55rem 0.5rem;
+  }
 }
 
 /* Chessground rings the checked king with a red radial gradient; this pulses it
@@ -419,7 +1062,8 @@ cg-board square.check {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  cg-board square.check {
+  cg-board square.check,
+  .skeleton {
     animation: none;
   }
 }

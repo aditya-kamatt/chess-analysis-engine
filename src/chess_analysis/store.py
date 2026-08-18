@@ -4,13 +4,24 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import Counter, defaultdict
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
+from chess_analysis.classify import Severity
 from chess_analysis.db import from_iso, now, to_iso, transaction
 from chess_analysis.engine import line_to_dict
-from chess_analysis.evaluation import score_to_dict
-from chess_analysis.models import AnalysisStatus, Game, Platform, Result, Settings
+from chess_analysis.evaluation import move_accuracy, score_to_dict
+from chess_analysis.models import (
+    AnalysisStatus,
+    AnalysisSummary,
+    Game,
+    GameFilter,
+    Platform,
+    Result,
+    Settings,
+)
 
 _SETTINGS_COLUMNS = (
     "chesscom_enabled",
@@ -120,19 +131,74 @@ def insert_games(conn: sqlite3.Connection, games: list[Game]) -> list[int]:
     return inserted
 
 
+# Chess.com's own boundaries, on base time alone. Their published rule adds
+# forty times the increment before comparing; ignoring the increment moves only
+# games within a few seconds of a boundary, which is the wrong precision to
+# argue about in a filter that exists to say "show me my blitz".
+_TIME_CLASS_SQL = """
+    CASE
+        WHEN time_control LIKE '1/%' THEN 'daily'
+        WHEN time_control GLOB '[0-9]*'
+             AND CAST(time_control AS INTEGER) < 180 THEN 'bullet'
+        WHEN time_control GLOB '[0-9]*'
+             AND CAST(time_control AS INTEGER) < 600 THEN 'blitz'
+        WHEN time_control GLOB '[0-9]*' THEN 'rapid'
+    END
+"""
+
+_WITH_ERRORS_SQL = """
+    EXISTS (
+        SELECT 1 FROM positions
+        WHERE positions.game_id = games.id AND positions.severity IS NOT NULL
+    )
+"""
+
+
+def _where(game_filter: GameFilter | None) -> tuple[str, list[Any]]:
+    """The WHERE clause for a filter, shared by the list and its count.
+
+    They must not drift: a count taken under different conditions from the rows
+    turns "showing 20 of 12" into a visible lie.
+    """
+    if game_filter is None:
+        return "", []
+
+    clauses: list[str] = []
+    values: list[Any] = []
+
+    if game_filter.player_color:
+        clauses.append("player_color = ?")
+        values.append(game_filter.player_color)
+    if game_filter.result:
+        clauses.append("result = ?")
+        values.append(game_filter.result)
+    if game_filter.time_class:
+        clauses.append(f"{_TIME_CLASS_SQL} = ?")
+        values.append(game_filter.time_class)
+    if game_filter.with_errors:
+        clauses.append(_WITH_ERRORS_SQL)
+
+    if not clauses:
+        return "", []
+    return "WHERE " + " AND ".join(clauses), values
+
+
 def list_games(
     conn: sqlite3.Connection,
     *,
     limit: int = 50,
     offset: int = 0,
+    game_filter: GameFilter | None = None,
 ) -> list[Game]:
+    where, values = _where(game_filter)
     rows = conn.execute(
-        """
+        f"""
         SELECT * FROM games
+        {where}
         ORDER BY played_at DESC, id DESC
         LIMIT ? OFFSET ?
         """,
-        (limit, offset),
+        [*values, limit, offset],
     ).fetchall()
     return [_game_from_row(row) for row in rows]
 
@@ -142,19 +208,31 @@ def get_game(conn: sqlite3.Connection, game_id: int) -> Game | None:
     return _game_from_row(row) if row else None
 
 
-def count_games(conn: sqlite3.Connection) -> int:
-    return conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+def count_games(
+    conn: sqlite3.Connection,
+    game_filter: GameFilter | None = None,
+) -> int:
+    where, values = _where(game_filter)
+    return conn.execute(f"SELECT COUNT(*) FROM games {where}", values).fetchone()[0]
 
 
 def oldest_played_at(
     conn: sqlite3.Connection,
-    platform: Platform,
+    platform: Platform | None = None,
 ) -> datetime | None:
-    """How far back the stored history goes, for the load-more indicator."""
-    row = conn.execute(
-        "SELECT MIN(played_at) FROM games WHERE platform = ?",
-        (str(platform),),
-    ).fetchone()
+    """How far back the stored history goes, for the load-more indicator.
+
+    Across every platform by default: the list mixes them, so "history loaded
+    back to" is a fact about the list and not about one account. Narrowed to a
+    platform when a sync needs that account's own backfill cursor.
+    """
+    if platform is None:
+        row = conn.execute("SELECT MIN(played_at) FROM games").fetchone()
+    else:
+        row = conn.execute(
+            "SELECT MIN(played_at) FROM games WHERE platform = ?",
+            (str(platform),),
+        ).fetchone()
     return from_iso(row[0]) if row and row[0] else None
 
 
@@ -236,6 +314,62 @@ def get_positions(conn: sqlite3.Connection, game_id: int) -> list[dict[str, Any]
         }
         for row in rows
     ]
+
+
+def analysis_summaries(
+    conn: sqlite3.Connection,
+    game_ids: Sequence[int],
+) -> dict[int, AnalysisSummary]:
+    """Summarise several games' analysis at once, keyed by game id.
+
+    Batched because the game list needs one of these per row: fifty separate
+    aggregate queries to decide which game is worth reviewing would be fifty
+    round trips to answer one screen.
+
+    Games with no stored analysis are absent from the result rather than present
+    with zeroes — nothing has been measured yet, which is not the same as a game
+    played without error.
+    """
+    ids = list(game_ids)
+    if not ids:
+        return {}
+
+    placeholders = ", ".join("?" * len(ids))
+    rows = conn.execute(
+        f"""
+        SELECT positions.game_id, positions.severity, positions.win_percent_loss
+        FROM positions
+        JOIN games ON games.id = positions.game_id
+        WHERE positions.game_id IN ({placeholders})
+          AND (games.player_color IS NULL
+               OR positions.side_to_move = games.player_color)
+        """,
+        ids,
+    ).fetchall()
+
+    by_game: dict[int, list[sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        by_game[row["game_id"]].append(row)
+
+    return {game_id: _summarise(moves) for game_id, moves in by_game.items()}
+
+
+def _summarise(moves: list[sqlite3.Row]) -> AnalysisSummary:
+    """Aggregate one game's player moves. `moves` is never empty."""
+    counts = Counter(row["severity"] for row in moves)
+    losses = [row["win_percent_loss"] for row in moves]
+
+    return AnalysisSummary(
+        moves=len(moves),
+        inaccuracies=counts[Severity.INACCURACY],
+        mistakes=counts[Severity.MISTAKE],
+        blunders=counts[Severity.BLUNDER],
+        average_loss=sum(losses) / len(losses),
+        # The mean of the per-move curve, not the curve of the mean loss: one
+        # catastrophic move and a game of quiet drift average the same win
+        # percentage away but are not equally accurate.
+        accuracy=sum(move_accuracy(loss) for loss in losses) / len(losses),
+    )
 
 
 def get_http_cache(

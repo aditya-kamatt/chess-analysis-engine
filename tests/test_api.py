@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from chess_analysis import db, store
 from chess_analysis.api import create_app
 from chess_analysis.platforms.chesscom import ArchiveResponse, RateLimited
+from chess_analysis.platforms.lichess import LichessError
+from chess_analysis.platforms.lichess import RateLimited as LichessRateLimited
 from chess_analysis.worker import WorkerStatus
 
 PGN = '[ECO "B01"]\n[White "alice"]\n[Black "bob"]\n\n1. e4 d5 *'
@@ -37,6 +39,51 @@ class FakeClient:
         if type(self).error is not None:
             raise type(self).error
         return ArchiveResponse(modified=True, entries=type(self).entries, etag='W/"1"')
+
+    def player_exists(self, username):
+        return username.lower() in type(self).known_players
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+
+LICHESS_PGN = '[White "alice"]\n[Black "carol"]\n\n1. e4 d5 *'
+
+
+def lichess_entry(game_id: str, played_at: datetime):
+    return {
+        "id": game_id,
+        "variant": "standard",
+        "speed": "blitz",
+        "createdAt": int(played_at.timestamp() * 1000),
+        "lastMoveAt": int(played_at.timestamp() * 1000),
+        "status": "resign",
+        "winner": "white",
+        "clock": {"initial": 180, "increment": 0},
+        "players": {
+            "white": {"user": {"name": "alice"}},
+            "black": {"user": {"name": "carol"}},
+        },
+        "pgn": LICHESS_PGN,
+    }
+
+
+class FakeLichessClient:
+    known_players = {"alice"}
+    entries: list[dict] = []
+    error: Exception | None = None
+    tokens: list[str | None] = []
+
+    def __init__(self, token=None):
+        type(self).tokens.append(token)
+
+    def export_games(self, username, *, max_games=None, since=None, until=None):
+        if type(self).error is not None:
+            raise type(self).error
+        return list(type(self).entries)
 
     def player_exists(self, username):
         return username.lower() in type(self).known_players
@@ -98,9 +145,19 @@ def client(tmp_path):
         entry("g2", datetime(2026, 8, 2, 12, tzinfo=UTC)),
         entry("g3", datetime(2026, 8, 3, 12, tzinfo=UTC)),
     ]
+    FakeLichessClient.error = None
+    FakeLichessClient.known_players = {"alice"}
+    FakeLichessClient.tokens = []
+    FakeLichessClient.entries = [
+        lichess_entry("l1", datetime(2026, 8, 4, 12, tzinfo=UTC)),
+        lichess_entry("l2", datetime(2026, 8, 5, 12, tzinfo=UTC)),
+    ]
     worker = FakeWorker()
     app = create_app(
-        db_path=tmp_path / "api.db", client_factory=FakeClient, worker=worker
+        db_path=tmp_path / "api.db",
+        client_factory=FakeClient,
+        lichess_client_factory=FakeLichessClient,
+        worker=worker,
     )
     with TestClient(app) as test_client:
         test_client.db_path = tmp_path / "api.db"
@@ -108,9 +165,17 @@ def client(tmp_path):
         yield test_client
 
 
-def configure(client, username="alice"):
+def configure(client, username="alice", **extra):
     return client.put(
-        "/api/settings", json={"chesscom_enabled": True, "chesscom_username": username}
+        "/api/settings",
+        json={"chesscom_enabled": True, "chesscom_username": username} | extra,
+    )
+
+
+def configure_lichess(client, username="alice", **extra):
+    return client.put(
+        "/api/settings",
+        json={"lichess_enabled": True, "lichess_username": username} | extra,
     )
 
 
@@ -186,7 +251,9 @@ def test_sync_inserts_games(client):
     assert body["inserted"] == 3
     assert body["first_sync"] is True
     assert body["total_games"] == 3
-    assert body["last_synced_at"] is not None
+    assert body["failures"] == []
+    assert [p["platform"] for p in body["platforms"]] == ["chesscom"]
+    assert body["platforms"][0]["last_synced_at"] is not None
 
 
 def test_second_sync_is_not_a_first_sync(client):
@@ -219,6 +286,177 @@ def test_concurrent_sync_is_refused(client):
         app.state.sync_lock.release()
 
     assert response.status_code == 409
+
+
+def test_lichess_settings_validate_the_username(client):
+    """Same contract as Chess.com: a bad username fails at save time."""
+    response = configure_lichess(client, "ghost")
+
+    assert response.status_code == 422
+    assert "ghost" in response.json()["detail"]
+    assert client.get("/api/settings").json()["lichess_enabled"] is False
+
+
+def test_enabling_lichess_without_a_username_is_rejected(client):
+    response = client.put(
+        "/api/settings", json={"lichess_enabled": True, "lichess_username": " "}
+    )
+    assert response.status_code == 422
+
+
+def test_the_token_is_stored_and_reported_only_as_present(client):
+    configure_lichess(client, lichess_token="tok-123")
+
+    body = client.get("/api/settings").json()
+    assert body["lichess_enabled"] is True
+    assert body["lichess_token_set"] is True
+    assert "tok-123" not in client.get("/api/settings").text
+    # Stored means used: validation and sync both go out authenticated.
+    assert FakeLichessClient.tokens == ["tok-123"]
+
+
+def test_the_token_survives_a_save_that_omits_it(client):
+    """The form cannot show the token, so a blank field is "unchanged" — not
+    "delete it", which would silently drop the user back to anonymous limits."""
+    configure_lichess(client, lichess_token="tok-123")
+
+    configure_lichess(client)
+
+    conn = db.connect(client.db_path)
+    assert store.load_settings(conn).lichess_token == "tok-123"
+    conn.close()
+    assert client.get("/api/settings").json()["lichess_token_set"] is True
+
+
+def test_an_empty_token_forgets_the_stored_one(client):
+    configure_lichess(client, lichess_token="tok-123")
+
+    configure_lichess(client, lichess_token="")
+
+    assert client.get("/api/settings").json()["lichess_token_set"] is False
+
+
+def test_changing_the_lichess_username_resets_its_cursors(client):
+    configure_lichess(client)
+    client.post("/api/sync")
+    assert client.get("/api/settings").json()["lichess_last_synced_at"] is not None
+
+    FakeLichessClient.known_players = {"alice", "dave"}
+    configure_lichess(client, "dave")
+
+    body = client.get("/api/settings").json()
+    assert body["lichess_last_synced_at"] is None
+    assert body["lichess_backfill_cursor"] is None
+
+
+def test_the_platforms_are_independently_toggleable(client):
+    """Neither, either or both (PRD 4.1). Saving one must not disable the
+    other, so the form always sends both sections."""
+    client.put(
+        "/api/settings",
+        json={
+            "chesscom_enabled": True,
+            "chesscom_username": "alice",
+            "lichess_enabled": True,
+            "lichess_username": "alice",
+        },
+    )
+
+    body = client.get("/api/settings").json()
+    assert body["chesscom_enabled"] is True
+    assert body["lichess_enabled"] is True
+
+
+def test_a_rejected_lichess_username_saves_nothing_at_all(client):
+    """Both platforms are validated before either is written."""
+    client.put(
+        "/api/settings",
+        json={
+            "chesscom_enabled": True,
+            "chesscom_username": "alice",
+            "lichess_enabled": True,
+            "lichess_username": "ghost",
+        },
+    )
+
+    body = client.get("/api/settings").json()
+    assert body["chesscom_enabled"] is False
+    assert body["lichess_enabled"] is False
+
+
+def test_lichess_sync_inserts_games(client):
+    configure_lichess(client)
+
+    body = client.post("/api/sync").json()
+
+    assert body["inserted"] == 2
+    assert [p["platform"] for p in body["platforms"]] == ["lichess"]
+    assert body["total_games"] == 2
+
+
+def test_syncing_both_platforms_reports_each_one(client):
+    configure(client, lichess_enabled=True, lichess_username="alice")
+
+    body = client.post("/api/sync").json()
+
+    assert [p["platform"] for p in body["platforms"]] == ["chesscom", "lichess"]
+    assert [p["inserted"] for p in body["platforms"]] == [3, 2]
+    assert body["inserted"] == 5
+    assert body["total_games"] == 5
+    # Everything new is queued, whichever platform it came from.
+    assert len(client.worker.enqueued) == 5
+
+
+def test_one_platform_failing_does_not_discard_the_others_games(client):
+    """A rate-limited account must not cost the user the games the other one
+    just returned (PRD 4.2)."""
+    configure(client, lichess_enabled=True, lichess_username="alice")
+    FakeLichessClient.error = LichessRateLimited("Lichess is rate limiting")
+
+    response = client.post("/api/sync")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [p["platform"] for p in body["platforms"]] == ["chesscom"]
+    assert body["failures"] == [
+        {"platform": "lichess", "message": "Lichess is rate limiting"}
+    ]
+    assert body["total_games"] == 3
+
+
+def test_every_platform_failing_is_an_error_response(client):
+    configure_lichess(client)
+    FakeLichessClient.error = LichessError("lichess is down")
+
+    response = client.post("/api/sync")
+
+    assert response.status_code == 502
+    assert "lichess is down" in response.json()["detail"]
+
+
+def test_the_lichess_game_reaches_the_list(client):
+    configure_lichess(client)
+    client.post("/api/sync")
+
+    game = client.get("/api/games").json()["games"][0]
+
+    assert game["platform"] == "lichess"
+    assert game["opponent"] == "carol"
+    assert game["player_color"] == "white"
+    assert game["result"] == "win"
+    assert game["time_control"] == "180"
+    assert game["url"] == "https://lichess.org/l2"
+
+
+def test_history_depth_spans_both_platforms(client):
+    """The indicator describes the list, which mixes them."""
+    configure(client, lichess_enabled=True, lichess_username="alice")
+    client.post("/api/sync")
+
+    body = client.get("/api/games").json()
+
+    assert body["total"] == 5
+    assert body["history_back_to"].startswith("2026-08-01")
 
 
 def test_games_list_is_newest_first(client):
@@ -295,8 +533,92 @@ def test_empty_state_is_not_an_error(client):
 
 def test_pagination_bounds_are_enforced(client):
     assert client.get("/api/games", params={"limit": 0}).status_code == 422
-    assert client.get("/api/games", params={"limit": 500}).status_code == 422
+    assert client.get("/api/games", params={"limit": 501}).status_code == 422
     assert client.get("/api/games", params={"offset": -1}).status_code == 422
+    # The list re-requests its whole open window, so the ceiling is a screenful.
+    assert client.get("/api/games", params={"limit": 500}).status_code == 200
+
+
+def games_played_as(client, colors):
+    """Store one game per colour, so the colour filter has something to sort."""
+    conn = db.connect(client.db_path)
+    for index, color in enumerate(colors):
+        conn.execute(
+            "INSERT INTO games (platform, platform_game_id, played_at, pgn,"
+            " player_color, result, time_control) VALUES"
+            " ('chesscom', ?, ?, '*', ?, ?, ?)",
+            (
+                f"g{index}",
+                f"2026-08-{index + 1:02d}T00:00:00+00:00",
+                color,
+                "win" if index % 2 else "loss",
+                "180" if index % 2 else "600",
+            ),
+        )
+    conn.close()
+
+
+def test_filtering_by_colour_and_result(client):
+    games_played_as(client, ["white", "black", "white", "black"])
+
+    white = client.get("/api/games", params={"color": "white"}).json()
+    losses = client.get("/api/games", params={"result": "loss"}).json()
+
+    assert {g["player_color"] for g in white["games"]} == {"white"}
+    assert {g["result"] for g in losses["games"]} == {"loss"}
+
+
+def test_filtered_total_matches_the_filtered_rows(client):
+    """The count drives "showing 20 of N"; taken unfiltered it would read as a
+    list that is hiding rows it is not actually hiding."""
+    games_played_as(client, ["white", "black", "white", "black"])
+
+    body = client.get("/api/games", params={"color": "white"}).json()
+
+    assert body["total"] == len(body["games"]) == 2
+
+
+def test_filtering_by_time_class(client):
+    games_played_as(client, ["white", "black", "white", "black"])
+
+    blitz = client.get("/api/games", params={"time_class": "blitz"}).json()
+    rapid = client.get("/api/games", params={"time_class": "rapid"}).json()
+
+    assert {g["time_control"] for g in blitz["games"]} == {"180"}
+    assert {g["time_control"] for g in rapid["games"]} == {"600"}
+
+
+def test_an_unparseable_time_control_falls_in_no_class(client):
+    """Chess.com sends "-" for some games; it must not silently count as
+    bullet just because CAST says zero."""
+    conn = db.connect(client.db_path)
+    conn.execute(
+        "INSERT INTO games (platform, platform_game_id, played_at, pgn,"
+        " time_control) VALUES ('chesscom', 'odd', '2026-08-01T00:00:00+00:00',"
+        " '*', '-')"
+    )
+    conn.close()
+
+    for time_class in ("bullet", "blitz", "rapid", "daily"):
+        body = client.get("/api/games", params={"time_class": time_class}).json()
+        assert body["games"] == [], time_class
+
+
+def test_filtering_to_games_with_errors(client):
+    configure(client)
+    client.post("/api/sync")
+    store_analysis(client, 1, [analysed_ply(severity="blunder", win_percent_loss=40.0)])
+    store_analysis(client, 2, [analysed_ply()])  # analysed, but played clean
+
+    body = client.get("/api/games", params={"with_errors": "true"}).json()
+
+    assert [g["id"] for g in body["games"]] == [1]
+    assert body["total"] == 1
+
+
+def test_unknown_filter_values_are_rejected(client):
+    assert client.get("/api/games", params={"color": "purple"}).status_code == 422
+    assert client.get("/api/games", params={"time_class": "hyper"}).status_code == 422
 
 
 def test_sync_queues_new_games_for_analysis(client):
@@ -358,7 +680,10 @@ def test_analysis_of_an_unanalysed_game_is_empty(client):
     configure(client)
     client.post("/api/sync")
 
-    assert client.get("/api/games/1/analysis").json() == {"positions": []}
+    assert client.get("/api/games/1/analysis").json() == {
+        "positions": [],
+        "summary": None,
+    }
 
 
 def test_analysis_of_a_missing_game_is_404(client):
@@ -441,6 +766,85 @@ def test_severity_reaches_the_move_list(client):
 
     assert position["severity"] == "blunder"
     assert position["win_percent_loss"] == pytest.approx(35.9)
+
+
+def test_summary_counts_the_players_errors(client):
+    """The list and the game header are built from this, so it must answer
+    "which game is worth reviewing" without shipping every ply."""
+    from chess.engine import Cp
+
+    configure(client)
+    client.post("/api/sync")
+    store_analysis(
+        client,
+        1,
+        [
+            analysed_ply(ply=0, win_percent_loss=1.0),
+            analysed_ply(ply=1, win_percent_loss=12.0, severity="inaccuracy"),
+            analysed_ply(ply=2, win_percent_loss=24.0, severity="mistake"),
+            analysed_ply(
+                ply=3, played_move_score=Cp(-400), win_percent_loss=41.0,
+                severity="blunder",
+            ),
+        ],
+    )
+
+    summary = client.get("/api/games/1/analysis").json()["summary"]
+
+    assert summary["moves"] == 4
+    assert summary["inaccuracies"] == 1
+    assert summary["mistakes"] == 1
+    assert summary["blunders"] == 1
+    assert summary["average_loss"] == pytest.approx(19.5)
+    assert 0 < summary["accuracy"] < 100
+
+
+def test_summary_ignores_the_opponents_moves(client):
+    """Accuracy answers "how well did I play", so the opponent's half of the
+    game cannot count towards it (PRD 4.4)."""
+    import chess
+
+    configure(client)  # alice, who played white in the fixture PGN
+    client.post("/api/sync")
+    store_analysis(
+        client,
+        1,
+        [
+            analysed_ply(ply=0, side_to_move=chess.WHITE, win_percent_loss=2.0),
+            analysed_ply(ply=1, side_to_move=chess.BLACK, win_percent_loss=60.0),
+        ],
+    )
+
+    summary = client.get("/api/games/1/analysis").json()["summary"]
+
+    assert summary["moves"] == 1
+    assert summary["average_loss"] == pytest.approx(2.0)
+
+
+def test_game_list_carries_summaries(client):
+    """One batched query behind the list, not one per row."""
+    configure(client)
+    client.post("/api/sync")
+    store_analysis(client, 1, [analysed_ply(win_percent_loss=30.0, severity="blunder")])
+
+    games = {g["id"]: g for g in client.get("/api/games").json()["games"]}
+
+    assert games[1]["analysis"]["blunders"] == 1
+    # Nothing measured yet is not the same as a game played without error.
+    assert games[2]["analysis"] is None
+
+
+def test_a_clean_game_still_reports_a_summary(client):
+    """Zero errors and no analysis must not look the same in the list."""
+    configure(client)
+    client.post("/api/sync")
+    store_analysis(client, 1, [analysed_ply(win_percent_loss=0.0)])
+
+    summary = client.get("/api/games/1/analysis").json()["summary"]
+
+    assert summary["blunders"] == 0
+    # The fitted curve tops out a hair under 100; it rounds to 100 on screen.
+    assert summary["accuracy"] == pytest.approx(100.0, abs=0.001)
 
 
 def test_opening_a_game_analyses_it_next(client):

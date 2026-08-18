@@ -47,6 +47,53 @@ class Settings:
     background_analysis: bool = True
     """Analyse the whole synced archive, not only games you open."""
 
+    @property
+    def lichess_token_set(self) -> bool:
+        """Whether a token is stored. The token itself never leaves this
+        process — the UI needs to know it is there, not what it is (PRD 4.1)."""
+        return bool(self.lichess_token)
+
+
+@dataclass(frozen=True)
+class GameFilter:
+    """Which games the list is asking for. Every field None means all of them.
+
+    Applied in SQL rather than in the browser: a filter that only narrowed the
+    page already loaded would answer "no losses" when it means "no losses in the
+    most recent fifty", which is worse than offering no filter at all.
+    """
+
+    player_color: str | None = None
+    result: str | None = None
+    time_class: str | None = None
+    """bullet, blitz, rapid or daily — see `store` for the boundaries."""
+    with_errors: bool = False
+    """Only games the player made an inaccuracy or worse in."""
+
+    def __bool__(self) -> bool:
+        return bool(
+            self.player_color or self.result or self.time_class or self.with_errors
+        )
+
+
+@dataclass(frozen=True)
+class AnalysisSummary:
+    """What a game's stored analysis adds up to.
+
+    Aggregated over the moves severity was assigned to — the player's own (PRD
+    4.4) — so accuracy answers "how well did I play" and not "how well was this
+    game played". A game whose player colour is unknown was labelled on both
+    sides, and summarises over both for the same reason.
+    """
+
+    moves: int
+    inaccuracies: int
+    mistakes: int
+    blunders: int
+    average_loss: float
+    """Mean win percentage given up per move."""
+    accuracy: float
+
 
 @dataclass(frozen=True)
 class Game:

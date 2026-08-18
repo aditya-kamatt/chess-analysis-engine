@@ -13,17 +13,16 @@ No authentication: reading a player's archives is public.
 
 from __future__ import annotations
 
-import io
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-import chess.pgn
 import httpx
 
 from chess_analysis.models import Game, Platform, Result
+from chess_analysis.platforms import PlatformError, eco_from_pgn
 
 BASE_URL = "https://api.chess.com/pub"
 
@@ -49,7 +48,7 @@ _WIN_RESULTS = frozenset({"win"})
 STANDARD_RULES = "chess"
 
 
-class ChessComError(Exception):
+class ChessComError(PlatformError):
     """The Chess.com API could not be used."""
 
 
@@ -218,7 +217,8 @@ def parse_entry(entry: dict[str, Any], username: str) -> Game | None:
         player_color=color,
         opponent=opponent.get("username"),
         result=_result(player.get("result")),
-        eco_code=_eco(pgn),
+        # The archive JSON's `eco` field is a URL; the code lives in the PGN.
+        eco_code=eco_from_pgn(pgn),
         url=entry.get("url"),
     )
 
@@ -238,12 +238,3 @@ def _result(code: str | None) -> Result | None:
     if code in _DRAW_RESULTS:
         return Result.DRAW
     return Result.LOSS
-
-
-def _eco(pgn: str) -> str | None:
-    """The archive JSON's `eco` field is a URL; the code lives in the PGN."""
-    headers = chess.pgn.read_headers(io.StringIO(pgn))
-    if headers is None:
-        return None
-    code = headers.get("ECO")
-    return code or None

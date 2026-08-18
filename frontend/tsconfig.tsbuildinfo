@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/Board.tsx","./src/CandidateLines.tsx","./src/EvalBar.tsx","./src/EvalGraph.tsx","./src/GameView.tsx","./src/api.ts","./src/format.ts","./src/main.tsx","./src/replay.ts","./src/severity.ts"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/Board.tsx","./src/CandidateLines.tsx","./src/EvalBar.tsx","./src/EvalGraph.tsx","./src/GameView.tsx","./src/Summary.tsx","./src/api.ts","./src/format.ts","./src/main.tsx","./src/replay.ts","./src/severity.ts"],"version":"5.9.3"}
