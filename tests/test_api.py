@@ -759,7 +759,11 @@ def test_severity_reaches_the_move_list(client):
     store_analysis(
         client,
         1,
-        [analysed_ply(played_move_score=Cp(-400), win_percent_loss=35.9, severity="blunder")],
+        [
+            analysed_ply(
+                played_move_score=Cp(-400), win_percent_loss=35.9, severity="blunder"
+            )
+        ],
     )
 
     position = client.get("/api/games/1/analysis").json()["positions"][0]
@@ -844,7 +848,9 @@ def test_summary_counts_the_players_errors(client):
             analysed_ply(ply=1, win_percent_loss=12.0, severity="inaccuracy"),
             analysed_ply(ply=2, win_percent_loss=24.0, severity="mistake"),
             analysed_ply(
-                ply=3, played_move_score=Cp(-400), win_percent_loss=41.0,
+                ply=3,
+                played_move_score=Cp(-400),
+                win_percent_loss=41.0,
                 severity="blunder",
             ),
         ],
@@ -1025,9 +1031,7 @@ def test_preferences_patch_leaves_the_account_alone(client):
     configure(client)
     before = client.get("/api/settings").json()
 
-    body = client.patch(
-        "/api/settings", json={"reveal_lines_by_default": True}
-    ).json()
+    body = client.patch("/api/settings", json={"reveal_lines_by_default": True}).json()
 
     assert body["reveal_lines_by_default"] is True
     assert body["chesscom_enabled"] is True

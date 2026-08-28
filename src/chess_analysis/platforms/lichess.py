@@ -163,9 +163,7 @@ class LichessClient:
                 self._sleep(RATE_LIMIT_DELAY)
                 continue
             if response.status_code >= 400:
-                raise LichessError(
-                    f"Lichess returned {response.status_code} for {url}"
-                )
+                raise LichessError(f"Lichess returned {response.status_code} for {url}")
             return response
 
         raise RateLimited("exhausted retries contacting Lichess")

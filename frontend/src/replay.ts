@@ -40,7 +40,6 @@ export function replayPgn(pgn: string): Replay {
   return { fens, moves };
 }
 
-
 /** Positions after each move of a UCI line, for playing a variation out.
  *
  *  Returns one more entry than there are moves: index 0 is `fen` itself. */
@@ -65,7 +64,6 @@ export function positionsAfter(fen: string, uciMoves: string[]) {
 
   return { fens, squares };
 }
-
 
 /** Legal targets per origin square, in the shape chessground wants. */
 export function legalDests(fen: string): Map<Key, Key[]> {
@@ -111,7 +109,6 @@ export function isPromotion(fen: string, from: string, to: string): boolean {
   const rank = to[1];
   return (piece.color === "w" && rank === "8") || (piece.color === "b" && rank === "1");
 }
-
 
 /** The colour in check, or false — the shape chessground's `check` config
  *  wants, which highlights that king's square. */

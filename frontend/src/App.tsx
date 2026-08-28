@@ -295,8 +295,8 @@ function Accounts({
     <p className="muted account">
       {accounts.map((account) => (
         <span key={account.platform}>
-          {platformName(account.platform)} <strong>{account.username}</strong>{" "}
-          synced {relativeTime(account.syncedAt)} ·{" "}
+          {platformName(account.platform)} <strong>{account.username}</strong> synced{" "}
+          {relativeTime(account.syncedAt)} ·{" "}
         </span>
       ))}
       <button className="link" onClick={onToggleSettings}>
@@ -509,9 +509,9 @@ function SettingsPanel({
           />
         </label>
         <p className="muted">
-          Optional, and only yours: generate one under Preferences → API access
-          tokens on lichess.org. It raises the rate limits, is stored locally
-          and is never shown again.
+          Optional, and only yours: generate one under Preferences → API access tokens
+          on lichess.org. It raises the rate limits, is stored locally and is never
+          shown again.
         </p>
         {settings.lichess_token_set && (
           <label>
@@ -536,8 +536,8 @@ function SettingsPanel({
         />
       </label>
       <p className="muted">
-        18–20 is the target. Lower is much faster; evaluations are only
-        comparable between games analysed at the same depth.
+        18–20 is the target. Lower is much faster; evaluations are only comparable
+        between games analysed at the same depth.
       </p>
       <label>
         <input
@@ -548,8 +548,8 @@ function SettingsPanel({
         Analyse the whole archive in the background
       </label>
       <p className="muted">
-        Off means only games you open get analysed. Opening a game always jumps
-        the queue either way.
+        Off means only games you open get analysed. Opening a game always jumps the
+        queue either way.
       </p>
       <div className="settings-actions">
         <button type="submit" disabled={saving}>
@@ -613,9 +613,7 @@ function GameTable({
   if (games.total === 0) {
     return (
       <p className="muted">
-        {filtered
-          ? "No games match these filters."
-          : "No games yet. Hit “Sync now”."}
+        {filtered ? "No games match these filters." : "No games yet. Hit “Sync now”."}
       </p>
     );
   }
@@ -683,13 +681,7 @@ function GameTable({
   );
 }
 
-function AnalysisBadge({
-  status,
-  onRetry,
-}: {
-  status: string;
-  onRetry: () => void;
-}) {
+function AnalysisBadge({ status, onRetry }: { status: string; onRetry: () => void }) {
   switch (status) {
     case "complete":
       return <span className="badge done">analysed</span>;

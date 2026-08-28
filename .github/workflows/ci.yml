@@ -1,0 +1,212 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+
+jobs:
+  python-quality:
+    name: Python lint and format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.12
+
+      - name: Lint Python
+        run: uv run --python 3.12 ruff check .
+
+      - name: Check Python formatting
+        run: uv run --python 3.12 ruff format --check .
+
+  backend:
+    name: Backend tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --locked --python ${{ matrix.python-version }}
+
+      - name: Run backend tests with coverage
+        run: uv run --python ${{ matrix.python-version }} pytest tests/ --ignore=tests/test_stockfish.py --cov=chess_analysis --cov-report=term-missing --cov-fail-under=85
+
+  stockfish:
+    name: Stockfish integration tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.12
+
+      - name: Fetch pinned Stockfish
+        run: ./scripts/fetch-stockfish.sh
+
+      - name: Run Stockfish tests
+        run: uv run --python 3.12 pytest tests/test_stockfish.py
+
+  frontend:
+    name: Frontend typecheck and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Check frontend formatting
+        run: npm run format:check
+
+      - name: Typecheck frontend
+        run: npm run typecheck
+
+      - name: Run component tests with coverage
+        run: npm run test:coverage
+
+      - name: Upload frontend coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/
+
+      - name: Build frontend
+        run: npm run build
+
+  security:
+    name: Dependency security audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.12
+
+      - name: Export third-party Python dependencies
+        run: uv export --format requirements-txt --no-emit-project --output-file /tmp/chess-analysis-requirements.txt
+
+      - name: Audit Python dependencies
+        run: uv run --python 3.12 pip-audit -r /tmp/chess-analysis-requirements.txt --strict --cache-dir /tmp/pip-audit-cache
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts && npm audit --audit-level=high
+
+  actions-lint:
+    name: GitHub Actions lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Lint workflow files
+        uses: docker://rhysd/actionlint:1.7.7
+
+  package:
+    name: Build and install Python package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.12
+
+      - name: Build wheel and source distribution
+        run: uv build
+
+      - name: Install wheel in a clean environment
+        run: |
+          uv venv /tmp/chess-analysis-engine-package-test
+          uv pip install --python /tmp/chess-analysis-engine-package-test/bin/python dist/*.whl
+          /tmp/chess-analysis-engine-package-test/bin/python -c "import chess_analysis; print(chess_analysis.__name__)"

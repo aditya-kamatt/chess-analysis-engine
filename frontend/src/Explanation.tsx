@@ -81,8 +81,8 @@ function Instead({
   if (explanation.engine_agreed) {
     return (
       <p className="muted">
-        The engine picked this move too — at fixed depth the search can turn
-        against a move one ply after recommending it.
+        The engine picked this move too — at fixed depth the search can turn against a
+        move one ply after recommending it.
       </p>
     );
   }

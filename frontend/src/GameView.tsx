@@ -1,6 +1,6 @@
 import type { DrawShape } from "chessground/draw";
 import type { Key } from "chessground/types";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   ApiError,
   api,
@@ -9,7 +9,6 @@ import {
   type AnalysisSummary,
   type Evaluation,
   type GameDetail,
-  type Line,
   type Position,
 } from "./api";
 import { Board } from "./Board";
@@ -30,15 +29,7 @@ import {
   turnOf,
 } from "./replay";
 import { SEVERITY_MARK, type Severity, severityBadge } from "./severity";
-
-/** A line being explored off the game: the engine's, or one the user played.
- *  `index` is how many of `moves` are currently on the board, so stepping back
- *  and playing something else replaces the tail. */
-interface Sideline {
-  fromPly: number;
-  moves: string[];
-  index: number;
-}
+import { initialReviewSession, reviewReducer } from "./review-session";
 
 export function GameView({ gameId, onBack }: { gameId: number; onBack: () => void }) {
   const [game, setGame] = useState<GameDetail | null>(null);
@@ -46,29 +37,20 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
   const [positions, setPositions] = useState<Position[]>([]);
   const [summary, setSummary] = useState<AnalysisSummary | null>(null);
   const [status, setStatus] = useState<AnalysisStatus | null>(null);
-  const [ply, setPly] = useState(0);
   const [flipped, setFlipped] = useState(false);
-  const [revealed, setRevealed] = useState(false);
-  const [preview, setPreview] = useState<Line | null>(null);
-  const [sideline, setSideline] = useState<Sideline | null>(null);
   const [sidelineEval, setSidelineEval] = useState<Evaluation | null>(null);
   const [evaluating, setEvaluating] = useState(false);
-  /** A move waiting on a promotion piece, held between the drop and the pick. */
-  const [promotion, setPromotion] = useState<{ from: string; to: string } | null>(null);
   const [announcement, setAnnouncement] = useState("");
-  // Drawn arrows and circles, kept per position so they survive navigation.
-  const [drawings, setDrawings] = useState<Record<string, DrawShape[]>>({});
+  const [review, dispatchReview] = useReducer(reviewReducer, initialReviewSession);
+  const { drawings, ply, preview, promotion, revealed, sideline } = review;
 
   useEffect(() => {
     setGame(null);
     setPositions([]);
     setSummary(null);
     setStatus(null);
-    setPromotion(null);
+    dispatchReview({ type: "reset" });
     setAnnouncement("");
-    setPly(0);
-    setSideline(null);
-    setDrawings({});
     api
       .game(gameId)
       .then(setGame)
@@ -76,7 +58,9 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
     // Whether lines start revealed is a preference, not per-session state.
     api
       .settings()
-      .then((settings) => setRevealed(settings.reveal_lines_by_default))
+      .then((settings) =>
+        dispatchReview({ type: "reveal", revealed: settings.reveal_lines_by_default }),
+      )
       .catch(() => undefined);
   }, [gameId]);
 
@@ -133,14 +117,13 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
 
   const lastPly = replay ? replay.moves.length : 0;
 
-  const goTo = useCallback((next: number | ((current: number) => number)) => {
-    setSideline(null);
-    setPreview(null);
-    setPly(next);
-  }, []);
+  const goTo = useCallback(
+    (next: number) => dispatchReview({ type: "goTo", ply: next }),
+    [],
+  );
 
   const toggleLines = useCallback((next: boolean) => {
-    setRevealed(next);
+    dispatchReview({ type: "reveal", revealed: next });
     api.savePreferences({ reveal_lines_by_default: next }).catch(() => undefined);
   }, []);
 
@@ -168,8 +151,7 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
     }
   }, [positions]);
   const nextError = errorPlies.find((candidate) => candidate > ply) ?? null;
-  const previousError =
-    errorPlies.filter((candidate) => candidate < ply).pop() ?? null;
+  const previousError = errorPlies.filter((candidate) => candidate < ply).pop() ?? null;
 
   // The position on the board: the game's, or wherever the sideline has got to.
   const branchFen = replay ? replay.fens[sideline?.fromPly ?? ply] : null;
@@ -214,12 +196,7 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
 
   const applyMove = useCallback(
     (uci: string) => {
-      setPreview(null);
-      setSideline((current) => {
-        if (!current) return { fromPly: ply, moves: [uci], index: 1 };
-        const kept = current.moves.slice(0, current.index);
-        return { ...current, moves: [...kept, uci], index: kept.length + 1 };
-      });
+      dispatchReview({ type: "appendMove", fromPly: ply, move: uci });
     },
     [ply],
   );
@@ -231,7 +208,7 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
       // than assumed: auto-queening silently discards the under-promotion, and
       // a sideline is exactly where someone is checking whether it mattered.
       if (isPromotion(boardFen, from, to)) {
-        setPromotion({ from, to });
+        dispatchReview({ type: "promotion", promotion: { from, to } });
         return;
       }
       applyMove(from + to);
@@ -249,7 +226,7 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
       if (promotion) {
         if (event.key !== "Escape") return;
         event.preventDefault();
-        setPromotion(null);
+        dispatchReview({ type: "promotion", promotion: null });
         return;
       }
 
@@ -257,10 +234,16 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
         const depth = sideline.moves.length;
         const handlers: Record<string, () => void> = {
           ArrowLeft: () =>
-            setSideline((s) => (s ? { ...s, index: Math.max(0, s.index - 1) } : s)),
+            dispatchReview({
+              type: "stepSideline",
+              index: Math.max(0, sideline.index - 1),
+            }),
           ArrowRight: () =>
-            setSideline((s) => (s ? { ...s, index: Math.min(depth, s.index + 1) } : s)),
-          Escape: () => setSideline(null),
+            dispatchReview({
+              type: "stepSideline",
+              index: Math.min(depth, sideline.index + 1),
+            }),
+          Escape: () => dispatchReview({ type: "exitSideline" }),
         };
         const handler = handlers[event.key];
         if (!handler) return;
@@ -270,8 +253,8 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
       }
 
       const handlers: Record<string, () => void> = {
-        ArrowLeft: () => goTo((p) => Math.max(0, p - 1)),
-        ArrowRight: () => goTo((p) => Math.min(lastPly, p + 1)),
+        ArrowLeft: () => goTo(Math.max(0, ply - 1)),
+        ArrowRight: () => goTo(Math.min(lastPly, ply + 1)),
         Home: () => goTo(0),
         End: () => goTo(lastPly),
         // Letters rather than the vertical arrows: those still have to scroll
@@ -286,9 +269,12 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [lastPly, sideline, goTo, nextError, previousError, promotion]);
+  }, [lastPly, ply, sideline, goTo, nextError, previousError, promotion]);
 
-  const dests = useMemo(() => (boardFen ? legalDests(boardFen) : undefined), [boardFen]);
+  const dests = useMemo(
+    () => (boardFen ? legalDests(boardFen) : undefined),
+    [boardFen],
+  );
   const shapes = useMemo(
     () => (boardFen ? (drawings[boardFen] ?? []) : []),
     [drawings, boardFen],
@@ -331,7 +317,7 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
   const onShapesChange = useCallback(
     (next: DrawShape[]) => {
       if (!boardFen) return;
-      setDrawings((current) => ({ ...current, [boardFen]: next }));
+      dispatchReview({ type: "drawings", fen: boardFen, shapes: next });
     },
     [boardFen],
   );
@@ -380,7 +366,10 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
 
   const stored = evaluationAt(positions, ply);
   const evaluation = sideline
-    ? { winPercent: sidelineEval?.win_percent ?? null, score: sidelineEval?.eval ?? null }
+    ? {
+        winPercent: sidelineEval?.win_percent ?? null,
+        score: sidelineEval?.eval ?? null,
+      }
     : stored;
 
   const here = positions[ply] ?? null;
@@ -466,9 +455,11 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
                   color={turnOf(boardFen)}
                   onChoose={(piece) => {
                     applyMove(promotion.from + promotion.to + piece);
-                    setPromotion(null);
+                    dispatchReview({ type: "promotion", promotion: null });
                   }}
-                  onCancel={() => setPromotion(null)}
+                  onCancel={() =>
+                    dispatchReview({ type: "promotion", promotion: null })
+                  }
                 />
               )}
             </div>
@@ -553,9 +544,8 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
           )}
 
           <p className="muted hint">
-            Drag a piece to explore a sideline. Right-drag to draw an arrow,
-            right-click a square to ring it. <kbd>n</kbd> and <kbd>p</kbd> jump
-            between errors.
+            Drag a piece to explore a sideline. Right-drag to draw an arrow, right-click
+            a square to ring it. <kbd>n</kbd> and <kbd>p</kbd> jump between errors.
           </p>
 
           <p className="sr-only" role="status">
@@ -577,10 +567,16 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
               // The refutation runs from the position on the board; the move to
               // have played instead runs from the one before it.
               onPlayPunishment={(pv) =>
-                setSideline({ fromPly: ply, moves: pv, index: 1 })
+                dispatchReview({
+                  type: "startSideline",
+                  sideline: { fromPly: ply, moves: pv, index: 1 },
+                })
               }
               onPlayBetter={(pv) =>
-                setSideline({ fromPly: ply - 1, moves: pv, index: 1 })
+                dispatchReview({
+                  type: "startSideline",
+                  sideline: { fromPly: ply - 1, moves: pv, index: 1 },
+                })
               }
             />
           )}
@@ -591,9 +587,16 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
             pending={evaluating}
             revealed={revealed}
             onToggle={toggleLines}
-            onPreview={setPreview}
+            onPreview={(line) => dispatchReview({ type: "preview", line })}
             onPlay={(line) =>
-              setSideline({ fromPly: sideline?.fromPly ?? ply, moves: line.pv, index: 1 })
+              dispatchReview({
+                type: "startSideline",
+                sideline: {
+                  fromPly: sideline?.fromPly ?? ply,
+                  moves: line.pv,
+                  index: 1,
+                },
+              })
             }
           />
 
@@ -608,8 +611,8 @@ export function GameView({ gameId, onBack }: { gameId: number; onBack: () => voi
                       sideline.fromPly % 2 ? "." : "…"
                     } ${replay.moves[sideline.fromPly - 1]?.san ?? ""}`
               }
-              onStep={(index) => setSideline({ ...sideline, index })}
-              onExit={() => setSideline(null)}
+              onStep={(index) => dispatchReview({ type: "stepSideline", index })}
+              onExit={() => dispatchReview({ type: "exitSideline" })}
             />
           )}
 

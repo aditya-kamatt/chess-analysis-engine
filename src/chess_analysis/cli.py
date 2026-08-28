@@ -141,8 +141,7 @@ def _print_explanation(plies, index: int) -> None:
         # The engine's own move is still named: the claim is that this one is
         # easier for the same result, not that the engine was wrong.
         instead += (
-            f" — simpler than {better['engine_san']},"
-            f" and worth {better['cost']:.1f}%"
+            f" — simpler than {better['engine_san']}, and worth {better['cost']:.1f}%"
         )
     print(instead)
 

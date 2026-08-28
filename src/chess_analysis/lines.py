@@ -41,7 +41,11 @@ def present_lines(
         if entry is None:
             continue
         absorbed = next(
-            (k for k in kept if _converges(k["_positions"], entry["_positions"], horizon)),
+            (
+                k
+                for k in kept
+                if _converges(k["_positions"], entry["_positions"], horizon)
+            ),
             None,
         )
         if absorbed is None:

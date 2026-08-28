@@ -86,7 +86,7 @@ def test_unknown_username_raises():
 
 
 def test_a_rejected_token_is_named_as_such():
-    """"Not authorised" and "no such player" are different problems with
+    """ "Not authorised" and "no such player" are different problems with
     different fixes, so they must not arrive as the same message."""
     with client_for(lambda request: httpx.Response(401), token="stale") as client:
         with pytest.raises(InvalidToken):
@@ -105,11 +105,13 @@ def test_rate_limiting_is_retried_then_succeeds():
 
 
 def test_persistent_rate_limiting_surfaces_an_error():
-    with client_for(
-        lambda request: httpx.Response(429), max_retries=1, sleep=lambda _: None
-    ) as client:
-        with pytest.raises(RateLimited):
-            client.export_games("alice", max_games=50)
+    with (
+        client_for(
+            lambda request: httpx.Response(429), max_retries=1, sleep=lambda _: None
+        ) as client,
+        pytest.raises(RateLimited),
+    ):
+        client.export_games("alice", max_games=50)
 
 
 def test_network_failure_is_wrapped():

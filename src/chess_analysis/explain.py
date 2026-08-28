@@ -384,9 +384,7 @@ def _motif_for(
         and not board.attackers(not mover, move.to_square)
     ):
         victim = (
-            chess.PAWN
-            if board.is_en_passant(move)
-            else _type_at(board, move.to_square)
+            chess.PAWN if board.is_en_passant(move) else _type_at(board, move.to_square)
         )
         if victim is not None:
             name = chess.piece_name(victim)

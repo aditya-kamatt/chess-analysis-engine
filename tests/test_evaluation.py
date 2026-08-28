@@ -18,7 +18,9 @@ def test_equal_position_is_fifty_percent():
 
 def test_win_percent_is_symmetric():
     for centipawns in (25, 100, 350, 900):
-        assert win_percent(Cp(centipawns)) + win_percent(Cp(-centipawns)) == pytest.approx(100.0)
+        assert win_percent(Cp(centipawns)) + win_percent(
+            Cp(-centipawns)
+        ) == pytest.approx(100.0)
 
 
 def test_win_percent_is_monotonic():

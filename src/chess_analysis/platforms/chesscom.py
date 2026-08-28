@@ -134,7 +134,9 @@ class ChessComClient:
 
         response = self._get(url, headers=headers)
         if response.status_code == 304:
-            return ArchiveResponse(modified=False, etag=etag, last_modified=last_modified)
+            return ArchiveResponse(
+                modified=False, etag=etag, last_modified=last_modified
+            )
 
         return ArchiveResponse(
             modified=True,
@@ -149,7 +151,9 @@ class ChessComClient:
             try:
                 response = self._client.get(url, headers=headers)
             except httpx.RequestError as exc:
-                raise ChessComError(f"network error contacting Chess.com: {exc}") from exc
+                raise ChessComError(
+                    f"network error contacting Chess.com: {exc}"
+                ) from exc
 
             if response.status_code == 404:
                 raise UnknownPlayer(f"Chess.com returned 404 for {url}")

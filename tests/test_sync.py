@@ -28,7 +28,9 @@ def entry(uuid: str, played_at: datetime, **overrides):
 class FakeClient:
     """Stands in for ChessComClient; sync only needs these two methods."""
 
-    def __init__(self, archives: dict[str, list[dict]], unchanged: set[str] | None = None):
+    def __init__(
+        self, archives: dict[str, list[dict]], unchanged: set[str] | None = None
+    ):
         self.archives = archives
         self.unchanged = unchanged or set()
         self.fetched: list[str] = []
@@ -73,7 +75,10 @@ def conn(tmp_path):
 
 def month_of_games(year, month, count, start=0):
     base = datetime(year, month, 1, 12, 0, tzinfo=UTC)
-    return [entry(f"{year}-{month}-{i}", base + timedelta(days=i)) for i in range(start, start + count)]
+    return [
+        entry(f"{year}-{month}-{i}", base + timedelta(days=i))
+        for i in range(start, start + count)
+    ]
 
 
 def test_unconfigured_platform_is_refused(tmp_path):
@@ -131,9 +136,7 @@ def test_subsequent_sync_only_reads_months_since_the_last_one(conn):
         url_for(2026, 7): month_of_games(2026, 7, 3),
         url_for(2026, 8): month_of_games(2026, 8, 3),
     }
-    store.save_settings(
-        conn, chesscom_last_synced_at=datetime(2026, 7, 20, tzinfo=UTC)
-    )
+    store.save_settings(conn, chesscom_last_synced_at=datetime(2026, 7, 20, tzinfo=UTC))
     client = FakeClient(archives)
 
     sync_chesscom(conn, client)
@@ -193,7 +196,9 @@ def test_resyncing_the_same_month_does_not_duplicate(conn):
 def test_new_games_in_a_reread_month_are_added(conn):
     sync_chesscom(conn, FakeClient({url_for(2026, 8): month_of_games(2026, 8, 3)}))
 
-    result = sync_chesscom(conn, FakeClient({url_for(2026, 8): month_of_games(2026, 8, 5)}))
+    result = sync_chesscom(
+        conn, FakeClient({url_for(2026, 8): month_of_games(2026, 8, 5)})
+    )
 
     assert result.inserted == 2
     assert store.count_games(conn) == 5
@@ -429,7 +434,9 @@ def test_the_two_platforms_keep_separate_cursors(tmp_path):
     assert settings.lichess_last_synced_at is not None
     assert settings.chesscom_last_synced_at is None
 
-    sync_chesscom(connection, FakeClient({url_for(2026, 8): month_of_games(2026, 8, 2)}))
+    sync_chesscom(
+        connection, FakeClient({url_for(2026, 8): month_of_games(2026, 8, 2)})
+    )
 
     settings = store.load_settings(connection)
     assert settings.chesscom_last_synced_at is not None

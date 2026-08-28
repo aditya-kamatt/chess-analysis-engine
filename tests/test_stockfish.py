@@ -102,7 +102,9 @@ def test_analyses_a_real_game_end_to_end():
     # Morphy mates, so the final position is a win for white.
     assert win_percent(pov(result.final_score, chess.WHITE)) == 100.0
     # Black is losing badly by the end but is never labelled: white is the player.
-    assert all(p.severity is None for p in result.plies if p.side_to_move == chess.BLACK)
+    assert all(
+        p.severity is None for p in result.plies if p.side_to_move == chess.BLACK
+    )
 
 
 def test_cache_short_circuits_repeat_positions():

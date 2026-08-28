@@ -13,7 +13,8 @@ cd frontend && npm install
 Stockfish is pinned rather than installed from a package manager: fixed depth
 only yields reproducible evaluations if the engine producing them also stays
 fixed. Override with `STOCKFISH_VERSION` / `STOCKFISH_BUILD`, or point at your
-own binary with `STOCKFISH_PATH`.
+own binary with `STOCKFISH_PATH`. For supply-chain verification, set
+`STOCKFISH_SHA256` to the expected release archive checksum.
 
 ## Running
 
@@ -41,13 +42,31 @@ uv run python -m chess_analysis.cli games/opera-game.pgn --lines
 
 ## Tests
 
+Run the fast backend suite with:
+
 ```bash
 uv run pytest
 ```
 
-Tests in `test_stockfish.py` need the engine and skip without it. Nothing in the
-suite touches the network — the Chess.com and Lichess clients are exercised
-through a mock transport.
+The complete local CI gate is:
+
+```bash
+make ci
+```
+
+It runs Python and frontend linting/format checks, backend tests with
+coverage, the pinned Stockfish integration tests, frontend component tests with
+coverage, the frontend type-check/build, and a clean Python package
+build/install check. GitHub Actions runs the backend checks on Python 3.12 and
+3.13, with Stockfish isolated in its own job. Pull requests and pushes to
+`main` are checked; a scheduled run also catches dependency or runner drift.
+The desktop application has no browser-test job; UI behavior is covered by
+component tests.
+
+Tests in `test_stockfish.py` need the engine and skip without it. The CI
+Stockfish job downloads the pinned build before running them. Nothing in the
+application test suite touches the platform network — the Chess.com and
+Lichess clients are exercised through a mock transport.
 
 ## Layout
 

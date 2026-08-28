@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -21,22 +21,25 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from chess_analysis import db, store
+from chess_analysis.analysis_read import present_positions
 from chess_analysis.engine import EngineError, line_to_dict
 from chess_analysis.evaluation import (
-    score_from_dict,
     score_to_dict,
     terminal_score,
     win_percent,
 )
-from chess_analysis.explain import explain_error
 from chess_analysis.lines import present_lines
-from chess_analysis.models import AnalysisStatus, Game, GameFilter, Platform, Settings
-from chess_analysis.platforms import PlatformError
+from chess_analysis.models import AnalysisStatus, Game, GameFilter
 from chess_analysis.platforms import chesscom as chesscom_api
 from chess_analysis.platforms import lichess as lichess_api
 from chess_analysis.platforms.chesscom import ChessComClient
 from chess_analysis.platforms.lichess import LichessClient
-from chess_analysis.sync import SyncError, SyncResult, sync_chesscom, sync_lichess
+from chess_analysis.sources import (
+    AccountUpdate,
+    SourceAccounts,
+    SourceConfigurationError,
+)
+from chess_analysis.sync import SyncError
 from chess_analysis.worker import URGENT, AnalysisWorker
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -229,8 +232,7 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="Chess Analysis", lifespan=_lifespan)
     app.state.db_path = db_path
-    app.state.client_factory = client_factory
-    app.state.lichess_client_factory = lichess_client_factory
+    accounts = SourceAccounts(client_factory, lichess_client_factory)
     app.state.worker = worker if worker is not None else AnalysisWorker(db_path)
     # In-memory guard: one sync at a time, and the button disables while it runs.
     app.state.sync_lock = threading.Lock()
@@ -243,63 +245,31 @@ def create_app(
     def read_settings(conn: Conn) -> Any:
         return store.load_settings(conn)
 
-    def _chesscom_fields(current: Settings, update: SettingsUpdate) -> dict[str, Any]:
-        username = (update.chesscom_username or "").strip() or None
-
-        if update.chesscom_enabled:
-            if not username:
-                raise HTTPException(422, "Enter a Chess.com username")
-            with _wrapped_errors():
-                with client_factory() as client:
-                    if not client.player_exists(username):
-                        raise HTTPException(422, f"No Chess.com user named {username}")
-
-        fields: dict[str, Any] = {
-            "chesscom_enabled": update.chesscom_enabled,
-            "chesscom_username": username,
-        }
-        if current.chesscom_username != username:
-            fields |= _cleared_cursors(Platform.CHESSCOM)
-        return fields
-
-    def _lichess_fields(current: Settings, update: SettingsUpdate) -> dict[str, Any]:
-        username = (update.lichess_username or "").strip() or None
-        # None means "unchanged" and empty means "forget it"; see SettingsUpdate.
-        token = current.lichess_token
-        if update.lichess_token is not None:
-            token = update.lichess_token.strip() or None
-
-        if update.lichess_enabled:
-            if not username:
-                raise HTTPException(422, "Enter a Lichess username")
-            with _wrapped_errors():
-                # Sent with the token, so one that Lichess rejects is caught
-                # here rather than at the first sync (PRD 4.1).
-                with lichess_client_factory(token) as client:
-                    if not client.player_exists(username):
-                        raise HTTPException(422, f"No Lichess user named {username}")
-
-        fields: dict[str, Any] = {
-            "lichess_enabled": update.lichess_enabled,
-            "lichess_username": username,
-            "lichess_token": token,
-        }
-        if current.lichess_username != username:
-            fields |= _cleared_cursors(Platform.LICHESS)
-        return fields
-
     @app.put("/api/settings", response_model=SettingsResponse)
     def write_settings(conn: Conn, update: SettingsUpdate) -> Any:
         current = store.load_settings(conn)
         # Both platforms are validated before anything is written, so a bad
         # Lichess username cannot leave half a saved form behind.
-        fields: dict[str, Any] = {
-            **_chesscom_fields(current, update),
-            **_lichess_fields(current, update),
-            "reveal_lines_by_default": update.reveal_lines_by_default,
-            "analysis_depth": update.analysis_depth,
-            "background_analysis": update.background_analysis,
-        }
+        try:
+            fields = accounts.validated_fields(
+                current,
+                AccountUpdate(
+                    chesscom_enabled=update.chesscom_enabled,
+                    chesscom_username=update.chesscom_username,
+                    lichess_enabled=update.lichess_enabled,
+                    lichess_username=update.lichess_username,
+                    lichess_token=update.lichess_token,
+                ),
+            )
+        except SourceConfigurationError as exc:
+            if exc.cause is not None:
+                raise _as_http_error(exc.cause) from exc
+            raise HTTPException(422, str(exc)) from exc
+        fields.update(
+            reveal_lines_by_default=update.reveal_lines_by_default,
+            analysis_depth=update.analysis_depth,
+            background_analysis=update.background_analysis,
+        )
         store.save_settings(conn, **fields)
         return store.load_settings(conn)
 
@@ -314,45 +284,19 @@ def create_app(
             store.save_settings(conn, **fields)
         return store.load_settings(conn)
 
-    def _run_chesscom_sync(conn: sqlite3.Connection) -> SyncResult:
-        with client_factory() as client:
-            return sync_chesscom(conn, client)
-
-    def _run_lichess_sync(conn: sqlite3.Connection) -> SyncResult:
-        token = store.load_settings(conn).lichess_token
-        with lichess_client_factory(token) as client:
-            return sync_lichess(conn, client)
-
     @app.post("/api/sync", response_model=SyncResponse)
     def run_sync(conn: Conn) -> Any:
-        settings = store.load_settings(conn)
-        runners = [
-            (platform, run)
-            for platform, enabled, run in (
-                (Platform.CHESSCOM, settings.chesscom_enabled, _run_chesscom_sync),
-                (Platform.LICHESS, settings.lichess_enabled, _run_lichess_sync),
-            )
-            if enabled
-        ]
-        if not runners:
-            raise HTTPException(400, "No platform is configured")
-
         if not app.state.sync_lock.acquire(blocking=False):
             raise HTTPException(409, "A sync is already running")
-
-        results: list[SyncResult] = []
-        failures: list[tuple[Platform, Exception]] = []
         try:
-            # Platforms are synced independently: one account being rate
-            # limited must not throw away the games the other one just
-            # returned, so its failure is reported beside them (PRD 4.2).
-            for platform, run in runners:
-                try:
-                    results.append(run(conn))
-                except (PlatformError, SyncError) as exc:
-                    failures.append((platform, exc))
+            outcome = accounts.sync(conn)
+        except SourceConfigurationError as exc:
+            raise HTTPException(400, str(exc)) from exc
         finally:
             app.state.sync_lock.release()
+
+        results = outcome.results
+        failures = outcome.failures
 
         if not results:
             # Nothing was synced at all, so the failure is the whole answer and
@@ -417,9 +361,7 @@ def create_app(
         summaries = store.analysis_summaries(conn, [_id(game) for game in games])
         return GameList(
             games=[
-                GameSummary(
-                    **_summary_fields(game), analysis=summaries.get(_id(game))
-                )
+                GameSummary(**_summary_fields(game), analysis=summaries.get(_id(game)))
                 for game in games
             ],
             total=store.count_games(conn, game_filter),
@@ -450,7 +392,7 @@ def create_app(
         # in with the board instead of needing its own refresh.
         summaries = store.analysis_summaries(conn, [game_id])
         return {
-            "positions": _with_win_percents(store.get_positions(conn, game_id)),
+            "positions": present_positions(store.get_positions(conn, game_id)),
             "summary": summaries.get(game_id),
         }
 
@@ -548,53 +490,6 @@ def create_app(
     return app
 
 
-def _with_win_percents(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Attach win percentages, and an explanation to every flagged move.
-
-    Computed here with the same model the classifier uses, rather than
-    reimplementing the sigmoid in TypeScript: if the evaluation bar and the
-    severity labels ever drifted apart the UI would contradict itself.
-
-    `eval` is the position before the move, `played` the position after it —
-    together they cover every board state the user can step to.
-
-    Explanations are derived rather than stored (PRD 4.5), and read from the
-    neighbouring rows: the refutation of the move played at ply `n` is the best
-    line of ply `n + 1`, which is already in hand.
-    """
-    enriched = []
-    for index, position in enumerate(positions):
-        best = position["lines"][0]["score"] if position["lines"] else None
-        played = position["played_move_eval"]
-        following = positions[index + 1] if index + 1 < len(positions) else None
-        enriched.append(
-            {
-                **position,
-                "lines": present_lines(position["fen"], position["lines"]),
-                "eval": best,
-                "eval_win_percent": (
-                    win_percent(score_from_dict(best)) if best is not None else None
-                ),
-                "played_win_percent": win_percent(score_from_dict(played)),
-                "explanation": (
-                    explain_error(
-                        position["fen"],
-                        position["played_move"],
-                        position["lines"],
-                        refutation=following["lines"] if following else None,
-                        win_percent_loss=position["win_percent_loss"],
-                        last_move=(
-                            positions[index - 1]["played_move"] if index else None
-                        ),
-                    )
-                    if position["severity"]
-                    else None
-                ),
-            }
-        )
-    return enriched
-
-
 def _outcome(board: chess.Board) -> str:
     """Why a position is final, for the readout on a sideline that ends."""
     if board.is_checkmate():
@@ -627,16 +522,6 @@ def _summary_fields(game: Game) -> dict[str, Any]:
     }
 
 
-def _cleared_cursors(platform: Platform) -> dict[str, Any]:
-    """A different account is a different archive: the cursors describe the old
-    one and must not be carried over, or the first sync of the new account
-    would fetch only "since" a time that never applied to it."""
-    return {
-        f"{platform}_last_synced_at": None,
-        f"{platform}_backfill_cursor": None,
-    }
-
-
 def _as_http_error(exc: Exception) -> HTTPException:
     """The response for a platform failure, naming the cause (PRD 4.2).
 
@@ -655,15 +540,6 @@ def _as_http_error(exc: Exception) -> HTTPException:
             return HTTPException(400, str(exc))
         case _:
             return HTTPException(502, str(exc))
-
-
-@contextmanager
-def _wrapped_errors() -> Iterator[None]:
-    """Turn platform failures into responses naming the cause (PRD 4.2)."""
-    try:
-        yield
-    except (PlatformError, SyncError) as exc:
-        raise _as_http_error(exc) from exc
 
 
 app = create_app()
