@@ -38,16 +38,30 @@ export function shortDate(iso: string): string {
   });
 }
 
+/** The same date without the year, for the phone-width list where the year is
+ *  the least useful thing on the row and costs a whole column of the ones that
+ *  are. Both forms are rendered and one is hidden by media query — the choice
+ *  is a layout question, and a resize listener would answer it in JavaScript. */
+export function compactDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+  });
+}
+
 /** Chess.com encodes time control as seconds, "seconds+increment", or
- *  "1/seconds" for daily games. */
+ *  "1/seconds" for daily games. Anything else — it sends a bare "-" for some
+ *  games — is shown as it arrived rather than run through the arithmetic, which
+ *  turned it into "NaN min". */
 export function timeControl(raw: string | null): string {
   if (!raw) return "—";
   if (raw.startsWith("1/")) {
     const days = Math.round(Number(raw.slice(2)) / 86400);
-    return `${days}d/move`;
+    return Number.isFinite(days) ? `${days}d/move` : raw;
   }
   const [base, increment] = raw.split("+");
   const minutes = Number(base) / 60;
+  if (!Number.isFinite(minutes)) return raw;
   const label = Number.isInteger(minutes) ? `${minutes}` : minutes.toFixed(1);
   return increment ? `${label}+${increment}` : `${label} min`;
 }

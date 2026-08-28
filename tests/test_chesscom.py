@@ -58,7 +58,11 @@ def test_unknown_username_raises():
 
 
 def test_rate_limiting_is_retried_then_succeeds():
-    responses = [httpx.Response(429), httpx.Response(429), httpx.Response(200, json={"archives": ["u"]})]
+    responses = [
+        httpx.Response(429),
+        httpx.Response(429),
+        httpx.Response(200, json={"archives": ["u"]}),
+    ]
     delays = []
 
     with client_for(lambda request: responses.pop(0), sleep=delays.append) as client:
@@ -68,11 +72,13 @@ def test_rate_limiting_is_retried_then_succeeds():
 
 
 def test_persistent_rate_limiting_surfaces_an_error():
-    with client_for(
-        lambda request: httpx.Response(429), max_retries=2, sleep=lambda _: None
-    ) as client:
-        with pytest.raises(RateLimited):
-            client.archive_urls("alice")
+    with (
+        client_for(
+            lambda request: httpx.Response(429), max_retries=2, sleep=lambda _: None
+        ) as client,
+        pytest.raises(RateLimited),
+    ):
+        client.archive_urls("alice")
 
 
 def test_network_failure_is_wrapped():
@@ -104,7 +110,10 @@ def test_modified_archive_returns_entries_and_validators():
         return httpx.Response(
             200,
             json={"games": [entry()]},
-            headers={"ETag": 'W/"v2"', "Last-Modified": "Fri, 15 Aug 2026 00:00:00 GMT"},
+            headers={
+                "ETag": 'W/"v2"',
+                "Last-Modified": "Fri, 15 Aug 2026 00:00:00 GMT",
+            },
         )
 
     with client_for(handler) as client:
@@ -165,7 +174,9 @@ def test_result_codes_collapse_to_three_outcomes(code, expected):
 
 def test_eco_comes_from_the_pgn_not_the_json():
     """The archive's `eco` field is a URL to the opening page."""
-    game = parse_entry(entry(eco="https://www.chess.com/openings/Scandinavian"), "alice")
+    game = parse_entry(
+        entry(eco="https://www.chess.com/openings/Scandinavian"), "alice"
+    )
     assert game is not None and game.eco_code == "B01"
 
 

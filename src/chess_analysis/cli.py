@@ -18,8 +18,14 @@ import chess.pgn
 
 from chess_analysis.analyzer import analyse_game, player_color_for
 from chess_analysis.cache import InMemoryEvalCache
-from chess_analysis.engine import DEFAULT_DEPTH, DEFAULT_MULTIPV, StockfishEvaluator
+from chess_analysis.engine import (
+    DEFAULT_DEPTH,
+    DEFAULT_MULTIPV,
+    StockfishEvaluator,
+    line_to_dict,
+)
 from chess_analysis.evaluation import pov
+from chess_analysis.explain import explain_error
 
 _SEVERITY_MARK = {"inaccuracy": "?!", "mistake": "?", "blunder": "??"}
 
@@ -80,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _print_game(result, game: chess.pgn.Game, *, show_lines: bool) -> None:
     board = game.board()
-    for ply in result.plies:
+    for index, ply in enumerate(result.plies):
         san = board.san(ply.played_move)
         board.push(ply.played_move)
 
@@ -94,11 +100,50 @@ def _print_game(result, game: chess.pgn.Game, *, show_lines: bool) -> None:
             line += f"  {ply.severity:<10} -{ply.win_percent_loss:.1f}%"
         print(line)
 
+        if ply.severity is not None:
+            _print_explanation(result.plies, index)
+
         if show_lines:
             for candidate in ply.lines:
                 pv_board = chess.Board(ply.fen)
                 pv_san = pv_board.variation_san(candidate.pv)
                 print(f"          {_format(candidate.score):>7}  {pv_san}")
+
+
+def _print_explanation(plies, index: int) -> None:
+    """What the move gave away, and what to have played (PRD 4.5)."""
+    ply = plies[index]
+    following = plies[index + 1] if index + 1 < len(plies) else None
+    explanation = explain_error(
+        ply.fen,
+        ply.played_move.uci(),
+        [line_to_dict(line) for line in ply.lines],
+        refutation=(
+            [line_to_dict(line) for line in following.lines] if following else None
+        ),
+        win_percent_loss=ply.win_percent_loss,
+        last_move=plies[index - 1].played_move.uci() if index else None,
+    )
+    if explanation is None:
+        return
+
+    print(f"          {explanation['summary']}")
+    if explanation["punishment"]:
+        print(f"          answered by {' '.join(explanation['punishment'])}")
+
+    if explanation["engine_agreed"]:
+        print("          the engine's own choice — it turned against it a ply later")
+        return
+
+    better = explanation["better"]
+    instead = f"          play {' '.join(better['pv_san'])}"
+    if better["simpler"]:
+        # The engine's own move is still named: the claim is that this one is
+        # easier for the same result, not that the engine was wrong.
+        instead += (
+            f" — simpler than {better['engine_san']}, and worth {better['cost']:.1f}%"
+        )
+    print(instead)
 
 
 def _format(score) -> str:

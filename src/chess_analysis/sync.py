@@ -1,5 +1,10 @@
 """Pulling games from a platform into the local database (PRD 4.2).
 
+One function per platform, because the shapes genuinely differ — Chess.com is a
+walk backward through monthly archives, Lichess is a single narrowed request —
+and both end at `_finish`, which is what keeps the cursor bookkeeping identical
+between them.
+
 `last_synced_at` and `backfill_cursor` are moved by different code paths on
 purpose. Sync moves the first one forward; backfill moves the second one
 backward. Conflating them either loses games or misreports how fresh the data
@@ -11,11 +16,12 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from chess_analysis.db import now
 from chess_analysis.models import Platform, Settings
 from chess_analysis.platforms.chesscom import ChessComClient, parse_archive
+from chess_analysis.platforms.lichess import LichessClient, parse_games
 from chess_analysis.store import (
     get_http_cache,
     insert_games,
@@ -26,6 +32,12 @@ from chess_analysis.store import (
 )
 
 FIRST_SYNC_TARGET = 50
+
+# Lichess narrows by when a game *started*, so asking only for games since the
+# last sync would miss one that began just before it and finished just after —
+# most often a correspondence game. Re-asking for a day either side costs a
+# handful of already-stored games, which `insert_games` ignores.
+LICHESS_SYNC_OVERLAP = timedelta(days=1)
 
 _ARCHIVE_MONTH = re.compile(r"/games/(\d{4})/(\d{2})/?$")
 
@@ -43,7 +55,8 @@ class SyncResult:
     inserted_ids: list[int]
     """New rows, in the order stored — what sync hands to the analysis queue."""
     archives_read: int
-    """Archives actually downloaded; a 304 does not count."""
+    """Archives actually downloaded; a 304 does not count. Lichess has no
+    archives to speak of, so its single games request counts as one."""
     archives_unchanged: int
     first_sync: bool
     last_synced_at: datetime
@@ -67,7 +80,14 @@ def sync_chesscom(
     # games have no archive at all and would 404.
     archives = client.archive_urls(username)
     if not archives:
-        return _finish(conn, settings, first_sync, SyncCounts(), collected_oldest=None)
+        return _finish(
+            conn,
+            settings,
+            Platform.CHESSCOM,
+            first_sync,
+            SyncCounts(),
+            collected_oldest=None,
+        )
 
     if first_sync:
         wanted = list(reversed(archives))
@@ -100,7 +120,39 @@ def sync_chesscom(
         if first_sync and counts.inserted >= target:
             break
 
-    return _finish(conn, settings, first_sync, counts, oldest_seen)
+    return _finish(conn, settings, Platform.CHESSCOM, first_sync, counts, oldest_seen)
+
+
+def sync_lichess(
+    conn: sqlite3.Connection,
+    client: LichessClient,
+    *,
+    target: int = FIRST_SYNC_TARGET,
+) -> SyncResult:
+    """Pull Lichess games into the database.
+
+    One request either way: bounded by `max` on a first sync, by `since` on
+    every one after it (PRD 4.2).
+    """
+    settings = load_settings(conn)
+    if not settings.lichess_enabled or not settings.lichess_username:
+        raise SyncError("Lichess is not configured")
+
+    username = settings.lichess_username
+    since = settings.lichess_last_synced_at
+    first_sync = since is None
+
+    if since is None:
+        entries = client.export_games(username, max_games=target)
+    else:
+        entries = client.export_games(username, since=since - LICHESS_SYNC_OVERLAP)
+
+    counts = SyncCounts(entries_seen=len(entries), archives_read=1)
+    games = parse_games(entries, username)
+    counts.inserted_ids.extend(insert_games(conn, games))
+
+    oldest = min((game.played_at for game in games), default=None)
+    return _finish(conn, settings, Platform.LICHESS, first_sync, counts, oldest)
 
 
 @dataclass
@@ -118,30 +170,31 @@ class SyncCounts:
 def _finish(
     conn: sqlite3.Connection,
     settings: Settings,
+    platform: Platform,
     first_sync: bool,
     counts: SyncCounts,
     collected_oldest: datetime | None,
 ) -> SyncResult:
-    """Commit the sync's effect on the cursors.
+    """Commit the sync's effect on one platform's cursors.
 
-    Only reached when every archive was fetched without raising, so a partial
-    failure leaves `last_synced_at` where it was and the games already inserted
-    are retained (PRD 7).
+    Only reached when every request succeeded, so a partial failure leaves
+    `last_synced_at` where it was and the games already inserted are retained
+    (PRD 7).
     """
     synced_at = now()
-    updates: dict[str, object] = {"chesscom_last_synced_at": synced_at}
+    updates: dict[str, object] = {f"{platform}_last_synced_at": synced_at}
 
     # The backfill cursor is only established here, on the first sync. After
     # that it belongs to "Load older games" and sync must not touch it.
-    cursor = settings.chesscom_backfill_cursor
+    cursor = getattr(settings, f"{platform}_backfill_cursor")
     if first_sync:
-        cursor = collected_oldest or oldest_played_at(conn, Platform.CHESSCOM)
-        updates["chesscom_backfill_cursor"] = cursor
+        cursor = collected_oldest or oldest_played_at(conn, platform)
+        updates[f"{platform}_backfill_cursor"] = cursor
 
     save_settings(conn, **updates)
 
     return SyncResult(
-        platform=Platform.CHESSCOM,
+        platform=platform,
         entries_seen=counts.entries_seen,
         inserted=counts.inserted,
         inserted_ids=list(counts.inserted_ids),

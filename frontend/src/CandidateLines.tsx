@@ -103,6 +103,7 @@ export function SidelineBar({
         className={index === 0 ? "move current" : "move"}
         onClick={() => onStep(0)}
         title="Back to the branch point"
+        aria-label="Back to the branch point"
       >
         ⟨
       </button>

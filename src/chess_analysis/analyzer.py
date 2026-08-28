@@ -94,7 +94,9 @@ def analyse_game(
 
     def score_at(index: int) -> Score:
         analysis = analyses[index]
-        return terminal_score(boards[index]) if analysis is None else analysis.best.score
+        return (
+            terminal_score(boards[index]) if analysis is None else analysis.best.score
+        )
 
     plies: list[AnalysedPly] = []
     for index, move in enumerate(moves):

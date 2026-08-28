@@ -75,7 +75,9 @@ def run_worker(db_path, game_ids, factory) -> AnalysisWorker:
 
 
 def idle(worker):
-    return lambda: worker.status().queued == 0 and worker.status().current_game_id is None
+    return lambda: (
+        worker.status().queued == 0 and worker.status().current_game_id is None
+    )
 
 
 def status_of(conn, game_id) -> str:
@@ -226,7 +228,9 @@ def test_interrupted_games_are_picked_up_again(conn, db_path):
 
     assert store.unanalysed_game_ids(conn) == [game_id]
 
-    run_worker(db_path, store.unanalysed_game_ids(conn), lambda c, d: ClosableEvaluator())
+    run_worker(
+        db_path, store.unanalysed_game_ids(conn), lambda c, d: ClosableEvaluator()
+    )
     assert status_of(conn, game_id) == "complete"
 
 
@@ -309,8 +313,10 @@ def test_opening_a_game_preempts_background_work(conn, db_path):
     try:
         worker.enqueue([background], priority=BACKGROUND)
         wait_until(
-            lambda: worker.status().current_game_id == background
-            and worker.status().current_ply > 3,
+            lambda: (
+                worker.status().current_game_id == background
+                and worker.status().current_ply > 3
+            ),
             message="background game never started",
         )
 
@@ -386,7 +392,9 @@ def test_evaluation_jumps_ahead_of_a_running_game(conn, db_path):
     worker.start()
     try:
         worker.enqueue([background], priority=BACKGROUND)
-        wait_until(lambda: worker.status().current_ply > 3, message="game never started")
+        wait_until(
+            lambda: worker.status().current_ply > 3, message="game never started"
+        )
 
         started = time.monotonic()
         analysis = worker.evaluate(chess.Board().fen(), timeout=10)
@@ -403,7 +411,9 @@ def test_evaluation_jumps_ahead_of_a_running_game(conn, db_path):
 
 
 def test_evaluation_reports_an_engine_failure_rather_than_hanging(db_path):
-    worker = AnalysisWorker(db_path, evaluator_factory=lambda c, d: ExplodingEvaluator())
+    worker = AnalysisWorker(
+        db_path, evaluator_factory=lambda c, d: ExplodingEvaluator()
+    )
     worker.start()
     try:
         with pytest.raises(EngineError, match="Stockfish died"):

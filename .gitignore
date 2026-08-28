@@ -5,3 +5,11 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 chess-analysis-app-prd.md
+
+# Local runtime state: one user, one machine. The database and its WAL are
+# not source, and a -wal snapshot committed mid-write is not even coherent.
+data/
+
+# Frontend dependencies and local build caches.
+frontend/node_modules/
+frontend/.vite/

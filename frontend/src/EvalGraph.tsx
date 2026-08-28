@@ -38,7 +38,12 @@ function Marker({ severity, x, y }: { severity: Severity; x: number; y: number }
       />
     );
   }
-  return <polygon points={`${x},${y - 6} ${x + 5.5},${y + 4} ${x - 5.5},${y + 4}`} {...common} />;
+  return (
+    <polygon
+      points={`${x},${y - 6} ${x + 5.5},${y + 4} ${x - 5.5},${y + 4}`}
+      {...common}
+    />
+  );
 }
 
 /** Evaluation across the game, with errors marked at the ply they were played.
@@ -83,8 +88,7 @@ export function EvalGraph({
   if (points.length < 2) return null;
 
   const x = (index: number) => (index / (points.length - 1)) * WIDTH;
-  const y = (percent: number) =>
-    INSET + (1 - percent / 100) * (HEIGHT - INSET * 2);
+  const y = (percent: number) => INSET + (1 - percent / 100) * (HEIGHT - INSET * 2);
 
   const curve = points.map((point) => `${x(point.ply)},${y(point.winPercent)}`);
   const area = `M ${curve.join(" L ")} L ${WIDTH},${HEIGHT} L 0,${HEIGHT} Z`;

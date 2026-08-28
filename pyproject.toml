@@ -11,7 +11,12 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "pip-audit>=2.10.1",
+    "pytest>=8.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.4",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -22,3 +27,16 @@ packages = ["src/chess_analysis"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+extend-exclude = ["vendor", "frontend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008", "SIM117"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

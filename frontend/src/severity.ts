@@ -15,6 +15,23 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
   blunder: "Blunder",
 };
 
+/** Worst first: a tally is read to find the damage, not to enumerate tiers. */
+export const SEVERITY_ORDER: Severity[] = ["blunder", "mistake", "inaccuracy"];
+
+const SEVERITY_PLURAL: Record<Severity, string> = {
+  inaccuracy: "inaccuracies",
+  mistake: "mistakes",
+  blunder: "blunders",
+};
+
+/** "1 blunder", "3 inaccuracies" — the spoken form of a tally, for labels the
+ *  `??` glyphs would leave a screen reader with nothing to say. */
+export function severityCount(count: number, severity: Severity): string {
+  const noun =
+    count === 1 ? SEVERITY_LABEL[severity].toLowerCase() : SEVERITY_PLURAL[severity];
+  return `${count} ${noun}`;
+}
+
 /** Glyph ink per badge, picked for contrast against that badge's own fill.
  *  Dark on the yellow and orange steps (9.5:1 and 6.6:1), white on the red
  *  one (4.8:1) — a single ink would be illegible on one of them. */

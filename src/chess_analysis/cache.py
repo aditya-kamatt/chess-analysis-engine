@@ -19,7 +19,6 @@ import chess
 from chess_analysis.db import now, to_iso
 from chess_analysis.engine import PositionAnalysis, line_from_dict, line_to_dict
 
-
 # The fifty-move rule fires at 100 halfmoves. Well below that it cannot affect
 # the search, so the clock is normalised away; near it the clock genuinely
 # changes the evaluation and stays in the key.
